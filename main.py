@@ -11,7 +11,17 @@ def main():
     sub.add_parser("fetch", help="auto-discover jobs on the ATS boards in config.yaml, score, tailor, queue")
     sub.add_parser("kpis", help="suggest questions to uncover real metrics for your roles")
     sub.add_parser("stats", help="job counts and running token usage")
+    sl = sub.add_parser("set-login", help="set the web app's login (password is stored only as a hash)")
+    sl.add_argument("--email", required=True)
     args = ap.parse_args()
+
+    if args.cmd == "set-login":
+        import getpass
+        from jobbot.webapp import set_login
+        pw = getpass.getpass("New password: ") if sys.stdin.isatty() else sys.stdin.readline().rstrip("\r\n")
+        set_login(args.email, pw)
+        print("Login saved. Restart the app; all devices will need to log in again.")
+        return
 
     if args.cmd == "app":
         from jobbot.webapp import run

@@ -1,4 +1,8 @@
-backend: cli             # cli = uses your Claude subscription via Claude Code (no API key); api = pay-per-token API key
+server:
+  host: 0.0.0.0            # 0.0.0.0 = reachable from your phone on the same Wi-Fi (login required); 127.0.0.1 = this laptop only
+  port: 5000
+
+backend: cli            # cli = uses your Claude subscription via Claude Code (no API key); api = pay-per-token API key
 models:
   score: haiku
   tailor: sonnet

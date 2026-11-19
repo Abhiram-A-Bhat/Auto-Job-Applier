@@ -9,6 +9,15 @@ python main.py stats        # real token usage so far
 # Prefer pay-per-token? set backend: api in config.yaml and $env:ANTHROPIC_API_KEY
 ```
 
+## Login and phone access
+`python main.py set-login --email you@example.com` sets the app login (stored only as a scrypt hash in the
+git-ignored `profile/auth.json`). Every page needs that login; "keep me logged in" sets a 30-day cookie per device.
+5 wrong passwords lock that device out for 15 minutes.
+The console prints the phone URL (e.g. `http://192.168.1.5:5000`) - your phone must be on the same Wi-Fi and the
+laptop must be running the app. Allow Python through Windows Firewall on **Private** networks when asked.
+Away from home: install Tailscale on both laptop and phone and open `http://<laptop-tailscale-ip>:5000`.
+Set `server.host: 127.0.0.1` in config.yaml to make it laptop-only again.
+
 ## Daily use
 1. Paste a job link in the app. Greenhouse / Lever / Ashby links and most company career pages work directly.
 2. It tailors your resume + cover letter (rules in `jobbot/ai.py`) and puts it in the approval queue.

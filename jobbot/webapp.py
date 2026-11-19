@@ -1,20 +1,54 @@
 """The interface: paste a link -> tailored resume queued -> approve -> form is filled in a visible browser.
 It asks you (here) only for answers it doesn't remember. Nothing is submitted without you."""
 import json
+import secrets
+import socket
 import threading
 import time
 import webbrowser
+from datetime import timedelta
 
-from flask import Flask, redirect, render_template_string, request, send_file
+from flask import Flask, redirect, render_template_string, request, send_file, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from . import db, fetchjob, formfill, memory, usage
-from .config import cfg, load_master
+from .config import ROOT, cfg, load_master
 from .pipeline import run_fetch, tailor_job
 
-app = Flask(__name__)
-TASKS = []  # in-memory progress of pasted links
+AUTH = ROOT / "profile" / "auth.json"     # {email, hash} - never the plain password; git-ignored
+SECRET = ROOT / "profile" / "secret.key"  # signs the login cookie; git-ignored
 
-CSS = """<style>
+
+def _secret():
+    if not SECRET.exists():
+        SECRET.parent.mkdir(exist_ok=True)
+        SECRET.write_text(secrets.token_hex(32))
+    return SECRET.read_text().strip()
+
+
+def _auth():
+    try:
+        return json.loads(AUTH.read_text())
+    except FileNotFoundError:
+        return None
+
+
+def set_login(email, password):
+    if len(password) < 8:
+        raise SystemExit("Use a password of at least 8 characters.")
+    AUTH.parent.mkdir(exist_ok=True)
+    AUTH.write_text(json.dumps({"email": email.strip(), "hash": generate_password_hash(password)}))
+    SECRET.unlink(missing_ok=True)  # new key: every existing login cookie is logged out
+
+
+app = Flask(__name__)
+app.secret_key = _secret()
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                  PERMANENT_SESSION_LIFETIME=timedelta(days=30))
+TASKS = []  # in-memory progress of pasted links
+_fails = {}  # ip -> recent failed login times
+
+CSS = """<meta name="viewport" content="width=device-width, initial-scale=1"><style>
 body{font:15px system-ui;max-width:900px;margin:24px auto;padding:0 16px;background:#fafafa;color:#222}
 details,.box{background:#fff;border:1px solid #ddd;border-radius:8px;margin:10px 0;padding:10px 14px}
 summary{cursor:pointer;font-weight:600}.meta{color:#666;font-weight:400}
@@ -24,8 +58,24 @@ input[type=text],input[type=url],textarea,select{width:100%;padding:6px;box-sizi
 button,a.btn{padding:6px 14px;border-radius:6px;border:1px solid #999;background:#eee;cursor:pointer;
 text-decoration:none;color:#000;font-size:14px;display:inline-block}
 .ok{background:#d9f2d9}.no{background:#f5d9d9}pre{white-space:pre-wrap;background:#f4f4f4;padding:8px;border-radius:6px}
-nav a{margin-right:14px}
+nav a{margin-right:14px} nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+button,a.btn{min-height:40px} pre{overflow-x:auto} body{overflow-wrap:anywhere}
+@media (max-width:600px){body{margin:12px auto;font-size:16px} input,textarea,select{font-size:16px}
+ form[style*="inline"]{display:block!important} button{width:100%;margin:4px 0}}
 </style>"""
+
+NAV = """<nav><a href="/">Apply</a><a href="/memory">Remembered answers</a>
+<form method="post" action="/logout" style="margin-left:auto"><button>Log out</button></form></nav>"""
+
+LOGIN = """<!doctype html><title>Log in</title>""" + CSS + """
+<h2>Job applier</h2>
+{% if not configured %}<div class="warn">No login set yet. On the laptop run: <code>python main.py set-login --email you@example.com</code></div>{% endif %}
+<form class="box" method="post">
+ {% if err %}<div class="warn">{{ err }}</div>{% endif %}
+ <label>Email<input type="text" name="email" autocomplete="username" required autofocus></label>
+ <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+ <label><input type="checkbox" name="remember" checked> Keep me logged in on this device (30 days)</label><br>
+ <button class="ok">Log in</button></form>"""
 
 PANEL = """
 {% for t in tasks %}<div class="box">{{ '⏳' if t.state=='working' else ('✓' if t.state=='done' else '⚠') }}
@@ -69,8 +119,7 @@ PROJECT {{ p.name }}
  <form method="post" action="/act/{{ j.id }}/rejected" style="display:inline"><button class="no">Reject</button></form>
 </details>{% else %}<p class="meta">Nothing waiting for approval.</p>{% endfor %}"""
 
-INDEX = """<!doctype html><title>Job applier</title>""" + CSS + """
-<nav><a href="/">Apply</a><a href="/memory">Remembered answers</a></nav>
+INDEX = """<!doctype html><title>Job applier</title>""" + CSS + NAV + """
 <div id="usage" class="box meta">{{ usage }}</div>
 <h2>Paste a job link</h2>
 <form class="box" method="post" action="/add">
@@ -85,14 +134,14 @@ INDEX = """<!doctype html><title>Job applier</title>""" + CSS + """
 <div id="queue">{{ queue|safe }}</div>
 <script>
 async function poll(id, url, skip){ const el=document.getElementById(id);
- if(skip(el)) return; try{ el.innerHTML=await (await fetch(url)).text(); }catch(e){} }
+ if(skip(el)) return; try{ const r=await fetch(url); if(r.status===401){location.href='/login';return;}
+ el.innerHTML=await r.text(); }catch(e){} }
 setInterval(()=>poll('panel','/panel',el=>el.contains(document.activeElement)&&document.activeElement.tagName!=='BODY'),3000);
 setInterval(()=>poll('usage','/usage',()=>false),5000);
 setInterval(()=>poll('queue','/queue',el=>el.querySelector('details[open]')),5000);
 </script>"""
 
-MEMORY = """<!doctype html><title>Remembered answers</title>""" + CSS + """
-<nav><a href="/">Apply</a><a href="/memory">Remembered answers</a></nav>
+MEMORY = """<!doctype html><title>Remembered answers</title>""" + CSS + NAV + """
 <h2>Remembered answers</h2><p class="meta">Used automatically on any form. Fix anything wrong here.</p>
 {% for k, v in items %}<form class="box" method="post" action="/memory/save"><input type="hidden" name="key" value="{{ k }}">
  <b>{{ v.label }}</b><input type="text" name="answer" value="{{ v.answer }}">
@@ -118,6 +167,44 @@ def _queue():
         j["r"] = json.loads(j["resume_json"])
         j["warns"] = json.loads(j["warnings"] or "[]")
     return render_template_string(QUEUE, jobs=jobs, counts=db.counts())
+
+
+@app.before_request
+def require_login():
+    if request.endpoint == "login" or session.get("user"):
+        return None
+    if request.path in ("/panel", "/queue", "/usage"):
+        return "", 401
+    return redirect("/login?next=" + request.path)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    err, a = "", _auth()
+    if request.method == "POST":
+        ip, now = request.remote_addr, time.time()
+        recent = [t for t in _fails.get(ip, []) if now - t < 900]
+        if len(recent) >= 5:
+            err = "Too many attempts. Try again in 15 minutes."
+        elif a and request.form.get("email", "").strip().lower() == a["email"].lower() \
+                and check_password_hash(a["hash"], request.form.get("password", "")):
+            session.clear()
+            session.permanent = bool(request.form.get("remember"))
+            session["user"] = a["email"]
+            _fails.pop(ip, None)
+            nxt = request.args.get("next", "/")
+            return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else "/")
+        else:
+            recent.append(now)
+            err = "Wrong email or password."
+        _fails[ip] = recent
+    return render_template_string(LOGIN, err=err, configured=bool(a))
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
 
 
 @app.get("/")
@@ -259,5 +346,26 @@ def run():
         formfill.enqueue(j["id"])
     if cfg.get("auto_fetch_hours"):
         threading.Thread(target=_auto_search_loop, args=(cfg["auto_fetch_hours"],), daemon=True).start()
-    threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
-    app.run(host="127.0.0.1", port=5000, threaded=True, use_reloader=False)
+    srv = cfg.get("server") or {}
+    host, port = srv.get("host", "0.0.0.0"), srv.get("port", 5000)
+    if not _auth():
+        print("No login set yet: run  python main.py set-login --email you@example.com")
+    if host == "0.0.0.0":
+        print(f"On your phone (same Wi-Fi): http://{_lan_ip()}:{port}")
+    threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    try:
+        from waitress import serve
+        serve(app, host=host, port=port, threads=8)
+    except ImportError:
+        app.run(host=host, port=port, threaded=True, use_reloader=False)
+
+
+def _lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))  # no packet is sent; just picks the LAN interface
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()

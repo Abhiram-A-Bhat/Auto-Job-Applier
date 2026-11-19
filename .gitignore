@@ -1,4 +1,6 @@
 data/
 profile/master_resume.yaml
 profile/answers.json
+profile/auth.json
+profile/secret.key
 __pycache__/
