@@ -2,11 +2,16 @@
 The laptop agent (jobbot/cloudsync.py) pulls everything in order whenever the laptop app is running.
 
 Env vars: APP_EMAIL, APP_PASSWORD_HASH, SECRET_KEY, AGENT_TOKEN,
-          KV_REST_API_URL + KV_REST_API_TOKEN (or UPSTASH_REDIS_REST_URL/_TOKEN) from the Upstash Redis integration.
+          KV_REST_API_URL + KV_REST_API_TOKEN (or UPSTASH_REDIS_REST_URL/_TOKEN) from the Upstash Redis integration,
+          or REDIS_URL from the Redis Cloud integration.
+WhatsApp bot (optional, official Cloud API): WA_VERIFY_TOKEN, WA_APP_SECRET, WA_TOKEN, WA_PHONE_NUMBER_ID,
+          WA_ALLOWED (comma-separated numbers allowed to use the bot, e.g. 919876543210), WA_API_VERSION.
 """
+import hashlib
 import hmac
 import json
 import os
+import re
 import time
 import uuid
 from datetime import timedelta
@@ -36,6 +41,8 @@ class MemStore:
         if op == "GET":
             return self.kv.get(a[0])
         if op == "SET":
+            if "NX" in [str(x).upper() for x in a[2:]] and a[0] in self.kv:
+                return None
             self.kv[a[0]] = str(a[1])
             return "OK"
         if op == "DEL":
@@ -195,6 +202,8 @@ def _ip():
 
 @app.before_request
 def guard():
+    if request.path.startswith("/api/whatsapp/"):  # authenticated by Meta's verify token / payload signature
+        return None
     if request.path.startswith("/api/agent/"):
         ok = AGENT_TOKEN and hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + AGENT_TOKEN)
         return None if ok else (jsonify(error="unauthorized"), 401)
@@ -303,8 +312,11 @@ def agent_push():
     d = request.get_json(force=True)
     for u in d.get("items", []):
         cur = _load("item:", u["id"]) or {"id": u["id"], "created": u.get("created", time.time())}
+        old = cur.get("status")
         cur.update({k: v for k, v in u.items() if k not in ("action", "id")})
         _put("item:", "items", cur, cur["created"])
+        if cur.get("wa_from") and cur.get("status") != old:
+            wa_notify(cur)
     for a in d.get("ack_actions", []):
         cur = _load("item:", a["id"])
         if cur and cur.get("action") == a["action"]:
@@ -315,4 +327,119 @@ def agent_push():
             _put("q:", "questions", {**q, "answer": None, "created": time.time()}, time.time())
     for qid in d.get("remove_questions", []) + d.get("ack_answers", []):
         _delete("q:", "questions", qid)
+    for q in d.get("questions", []):  # a form needs an answer: ping WhatsApp if the job came from there
+        it = _load("item:", q.get("item_id", ""))
+        if it and it.get("wa_from"):
+            wa_send(it["wa_from"], f"❓ {it.get('title') or 'A job'} needs an answer: \"{q['label']}\"\n"
+                                   f"Answer it here: {request.host_url}")
     return jsonify(ok=True)
+
+
+# ---- WhatsApp bot (official Cloud API; your personal WhatsApp stays a normal account) ---------------------------
+WA_VERIFY = os.environ.get("WA_VERIFY_TOKEN", "")
+WA_SECRET = os.environ.get("WA_APP_SECRET", "")
+WA_TOKEN = os.environ.get("WA_TOKEN", "")
+WA_PHONE_ID = os.environ.get("WA_PHONE_NUMBER_ID", "")
+WA_VER = os.environ.get("WA_API_VERSION", "v23.0")
+WA_ALLOWED = {re.sub(r"\D", "", n) for n in os.environ.get("WA_ALLOWED", "").split(",") if n.strip()}
+URL_RE = re.compile(r"https?://[^\s<>\"']+")
+FREE_WINDOW = 23.5 * 3600  # replies inside 24h of your last message are free "service" messages
+HELP = ("Send me a job link and I'll queue it \U0001F4CC\n"
+        "• approve <code> / reject <code> - decide on a tailored resume\n"
+        "• status - what's in the queue")
+
+
+def _code(item):
+    return item["id"][:5]
+
+
+def wa_send(to, text):
+    """Free-form reply - only inside the free 24h window, so the bot never costs money."""
+    last = float(store.cmd("GET", "wa:last:" + to) or 0)
+    if not (WA_TOKEN and WA_PHONE_ID) or time.time() - last > FREE_WINDOW:
+        return False
+    try:
+        httpx.post(f"https://graph.facebook.com/{WA_VER}/{WA_PHONE_ID}/messages",
+                   headers={"Authorization": f"Bearer {WA_TOKEN}"}, timeout=10,
+                   json={"messaging_product": "whatsapp", "to": to, "type": "text",
+                         "text": {"body": text[:4000], "preview_url": False}})
+        return True
+    except Exception:
+        return False
+
+
+def wa_notify(it):
+    s, name = it.get("status"), f"{it.get('title') or it['url'][:50]}{' - ' + it['company'] if it.get('company') else ''}"
+    msg = {
+        "queued": f"\U0001F4C4 Resume ready: {name}" + (f" (fit {it['score']})" if it.get("score") else "") +
+                  (f"\nReply *approve {_code(it)}* or *reject {_code(it)}*" if it.get("source") != "manual" else
+                   "\nThis site isn't automated - apply with the tailored PDF yourself.") + f"\n{request.host_url}",
+        "filled": f"\U0001F4DD Form filled for {name}. Review it on the laptop and press Submit.",
+        "submitted": f"✅ Applied: {name}",
+        "error": f"⚠️ Couldn't process {name}: {(it.get('notes') or '')[:200]}",
+    }.get(s)
+    if msg:
+        wa_send(it["wa_from"], msg)
+
+
+def _wa_handle(frm, text):
+    low = text.strip().lower()
+    items = _all("items", "item:")
+    m = re.match(r"^(approve|reject)\s+([a-f0-9]{4,12})\b", low)
+    if m:
+        hits = [i for i in items if i["id"].startswith(m[2])]
+        if not hits:
+            return f"No job with code {m[2]}."
+        it = hits[0]
+        if it.get("status") != "queued":
+            return f"{it.get('title') or 'That job'} is '{LABEL.get(it.get('status'), it.get('status'))}', nothing to {m[1]}."
+        it["action"] = "approved" if m[1] == "approve" else "rejected"
+        _put("item:", "items", it, it["created"])
+        _bump()
+        return ("\U0001F44D Approved - it will be filled in order." if m[1] == "approve" else "\U0001F5D1 Rejected.")
+    urls = [u.rstrip(").,;!?]'\"") for u in URL_RE.findall(text)]
+    if not urls:
+        if low in ("status", "queue"):
+            count = {}
+            for i in items:
+                count[i.get("status")] = count.get(i.get("status"), 0) + 1
+            seen = float(store.cmd("GET", "agent:seen") or 0)
+            lines = [f"{LABEL.get(k, k)}: {v}" for k, v in sorted(count.items())] or ["Queue is empty."]
+            return "\n".join(lines) + ("\n\U0001F7E2 Laptop online" if time.time() - seen < 120 else "\n\U0001F7E0 Laptop offline")
+        return HELP
+    for u in urls[:5]:
+        now = time.time()
+        _put("item:", "items", {"id": uuid.uuid4().hex[:12], "url": u, "pasted": text if len(text) > 200 else "",
+                                "created": now, "status": "waiting", "source": "whatsapp", "wa_from": frm}, now)
+    _bump()
+    waiting = sum(1 for i in items if i.get("status") == "waiting") + len(urls[:5])
+    online = time.time() - float(store.cmd("GET", "agent:seen") or 0) < 120
+    return (f"✅ Queued {len(urls[:5])} link{'s' if len(urls) > 1 else ''} ({waiting} waiting).\n" +
+            ("Laptop is online - tailoring now." if online else "Laptop is offline - I'll process it when it's back on."))
+
+
+@app.get("/api/whatsapp/webhook")
+def wa_verify():
+    ok = WA_VERIFY and request.args.get("hub.mode") == "subscribe" and \
+        hmac.compare_digest(request.args.get("hub.verify_token", ""), WA_VERIFY)
+    return (request.args.get("hub.challenge", ""), 200) if ok else ("forbidden", 403)
+
+
+@app.post("/api/whatsapp/webhook")
+def wa_hook():
+    raw = request.get_data()
+    sig = "sha256=" + hmac.new(WA_SECRET.encode(), raw, hashlib.sha256).hexdigest() if WA_SECRET else ""
+    if not WA_SECRET or not hmac.compare_digest(request.headers.get("X-Hub-Signature-256", ""), sig):
+        return "bad signature", 401
+    for e in json.loads(raw or b"{}").get("entry", []):
+        for ch in e.get("changes", []):
+            for m in (ch.get("value") or {}).get("messages", []):
+                frm = m.get("from", "")
+                if WA_ALLOWED and frm not in WA_ALLOWED:
+                    continue  # not you: ignore silently
+                if store.cmd("SET", "wa:msg:" + m.get("id", ""), 1, "NX", "EX", 86400) is None:
+                    continue  # Meta retries deliveries; handle each message once
+                store.cmd("SET", "wa:last:" + frm, time.time())
+                text = (m.get("text") or {}).get("body", "") if m.get("type") == "text" else ""
+                wa_send(frm, _wa_handle(frm, text))
+    return "ok", 200
