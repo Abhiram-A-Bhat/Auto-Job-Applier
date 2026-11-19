@@ -433,8 +433,14 @@ def wa_hook():
         return "bad signature", 401
     for e in json.loads(raw or b"{}").get("entry", []):
         for ch in e.get("changes", []):
-            for m in (ch.get("value") or {}).get("messages", []):
+            v = ch.get("value") or {}
+            for st in v.get("statuses", []):  # delivery receipts for the bot's own messages (errors explain failures)
+                print("wa status:", st.get("status"), "to ..." + st.get("recipient_id", "")[-4:],
+                      json.dumps(st.get("errors", []))[:300])
+            for m in v.get("messages", []):
                 frm = m.get("from", "")
+                print("wa message from ..." + frm[-4:], "type", m.get("type"),
+                      "allowed" if (not WA_ALLOWED or frm in WA_ALLOWED) else "NOT in WA_ALLOWED")
                 if WA_ALLOWED and frm not in WA_ALLOWED:
                     continue  # not you: ignore silently
                 if store.cmd("SET", "wa:msg:" + m.get("id", ""), 1, "NX", "EX", 86400) is None:
