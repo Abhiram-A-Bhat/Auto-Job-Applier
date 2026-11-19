@@ -44,9 +44,9 @@
   }
 }
 
-/* ---------- page + world ---------- */
-html { background: #e7ecfa; scroll-behavior: smooth; }
-@media (prefers-color-scheme: dark) { html { background: #06080f; } }
+/* ---------- page + world: blueprint grid, floating code glyphs ---------- */
+html { background: #eef1f6; scroll-behavior: smooth; }
+@media (prefers-color-scheme: dark) { html { background: #0a0d13; } }
 body {
   margin: 0 auto; max-width: 920px; padding: 22px 16px 96px; min-height: 100vh;
   font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
@@ -54,45 +54,64 @@ body {
   -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent;
 }
 ::selection { background: rgba(10, 132, 255, .28); }
+:root { --grid: rgba(28, 52, 96, .075); --grid-fine: rgba(28, 52, 96, .035); --grid-hi: rgba(10, 132, 255, .38); --glyph: rgba(28, 52, 96, .07); }
+@media (prefers-color-scheme: dark) { :root { --grid: rgba(150, 180, 255, .07); --grid-fine: rgba(150, 180, 255, .03); --grid-hi: rgba(95, 176, 255, .45); --glyph: rgba(170, 195, 255, .06); } }
 
-.lg-world { position: fixed; inset: -12vmax; z-index: -2; pointer-events: none; overflow: hidden; will-change: transform; }
-.lg-world .blob {
-  position: absolute; width: 48vmax; height: 48vmax; border-radius: 46% 54% 52% 48% / 50% 44% 56% 50%;
-  filter: blur(58px); opacity: .9; will-change: transform; animation: lg-drift 28s var(--ease) infinite alternate;
-}
-.lg-world .b1 { left: 2%; top: 0; background: radial-gradient(circle at 35% 35%, #8cc4ff, #2f6bff 58%, transparent 72%); }
-.lg-world .b2 { right: 0; top: 12%; background: radial-gradient(circle at 40% 40%, #ff9ad9, #b04bff 60%, transparent 72%); animation-duration: 34s; animation-delay: -6s; }
-.lg-world .b3 { left: 18%; bottom: 0; background: radial-gradient(circle at 50% 40%, #7af5d6, #00b3a4 58%, transparent 72%); animation-duration: 39s; animation-delay: -12s; }
-.lg-world .b4 { right: 14%; bottom: 6%; background: radial-gradient(circle at 50% 50%, #ffe08a, #ff7a45 58%, transparent 72%); animation-duration: 31s; animation-delay: -3s; }
-.lg-world .b5 { left: 44%; top: 34%; width: 32vmax; height: 32vmax; background: radial-gradient(circle, #d2c4ff, #6c5ce7 60%, transparent 72%); animation-duration: 25s; }
-.lg-world .b6 { left: -6%; top: 52%; width: 26vmax; height: 26vmax; background: radial-gradient(circle, #a8ffef, #3ad1ff 60%, transparent 72%); animation-duration: 42s; animation-delay: -20s; }
-@media (prefers-color-scheme: dark) { .lg-world .blob { opacity: .55; } }
-@keyframes lg-drift {
-  0% { transform: translate3d(0, 0, 0) rotate(0) scale(1); }
-  33% { transform: translate3d(7vmax, -5vmax, 0) rotate(60deg) scale(1.12); }
-  66% { transform: translate3d(-4vmax, 6vmax, 0) rotate(140deg) scale(.92); }
-  100% { transform: translate3d(5vmax, 3vmax, 0) rotate(220deg) scale(1.06); }
-}
+.lg-world { position: fixed; inset: 0; z-index: -2; pointer-events: none; overflow: hidden;
+  background: radial-gradient(1100px 620px at 12% -12%, rgba(10, 132, 255, .09), transparent 62%),
+              radial-gradient(900px 520px at 112% 18%, rgba(94, 92, 230, .07), transparent 62%); }
+.lg-grid, .lg-grid-hi { position: absolute; inset: -100px; will-change: background-position;
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+                    linear-gradient(var(--grid-fine) 1px, transparent 1px), linear-gradient(90deg, var(--grid-fine) 1px, transparent 1px);
+  background-size: 96px 96px, 96px 96px, 24px 24px, 24px 24px;
+  background-position: 0 var(--gy, 0px), 0 var(--gy, 0px), 0 var(--gy, 0px), 0 var(--gy, 0px); }
+/* the grid lights up around the pointer, like a blueprint under a lamp */
+.lg-grid-hi { --grid: var(--grid-hi); --grid-fine: rgba(10, 132, 255, .14); opacity: 0; transition: opacity .6s var(--ease);
+  -webkit-mask: radial-gradient(240px circle at calc(var(--cx, -999px) + 100px) calc(var(--cy, -999px) + 100px), #000, transparent 72%);
+          mask: radial-gradient(240px circle at calc(var(--cx, -999px) + 100px) calc(var(--cy, -999px) + 100px), #000, transparent 72%); }
+.lg-cursor-on .lg-grid-hi { opacity: 1; }
+.lg-glyph { position: absolute; font: 700 clamp(120px, 22vw, 260px)/1 ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  color: var(--glyph); letter-spacing: -.04em; white-space: nowrap; animation: lg-float 38s ease-in-out infinite alternate; }
+.lg-glyph:nth-child(3) { left: -2%; top: 6%; }
+.lg-glyph:nth-child(4) { right: -4%; top: 30%; animation-duration: 46s; animation-delay: -10s; }
+.lg-glyph:nth-child(5) { left: 8%; bottom: 4%; animation-duration: 52s; animation-delay: -22s; }
+.lg-glyph:nth-child(6) { right: 12%; bottom: -6%; font-size: clamp(90px, 15vw, 180px); animation-duration: 41s; animation-delay: -5s; }
+@keyframes lg-float { 0% { transform: translate3d(0, 0, 0) rotate(-4deg); } 100% { transform: translate3d(3vw, -4vh, 0) rotate(5deg); } }
 .lg-grain {
-  position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .07; mix-blend-mode: overlay;
+  position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .05; mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 .lg-progress {
   position: fixed; left: 0; top: 0; z-index: 60; width: 100%; height: 3px; transform-origin: 0 50%;
-  transform: scaleX(var(--p, 0)); background: linear-gradient(90deg, #0a84ff, #bf5af2, #ff375f, #ffd60a);
-  box-shadow: 0 0 14px rgba(191, 90, 242, .7); pointer-events: none;
+  transform: scaleX(var(--p, 0)); background: linear-gradient(90deg, #0a84ff, #5e5ce6);
+  box-shadow: 0 0 12px rgba(10, 132, 255, .55); pointer-events: none;
 }
-.lg-cursor {
-  position: fixed; left: -200px; top: -200px; z-index: -1; width: 400px; height: 400px; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(circle, rgba(255, 255, 255, .55), rgba(255, 255, 255, 0) 62%); mix-blend-mode: soft-light;
-}
-.lg-ring {
-  position: fixed; left: -16px; top: -16px; z-index: 70; width: 32px; height: 32px; border-radius: 50%; pointer-events: none;
-  background: rgba(255, 255, 255, .12); backdrop-filter: blur(2px) saturate(1.6);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .8), inset 0 1px 2px rgba(255, 255, 255, .9), 0 4px 12px rgba(16, 24, 48, .2);
-  transition: background .3s, box-shadow .3s;
-}
-.lg-ring.hot { background: rgba(10, 132, 255, .12); box-shadow: inset 0 0 0 1px rgba(10, 132, 255, .7), 0 0 18px rgba(10, 132, 255, .45); }
+
+/* ---------- cursor: terminal caret -> bracket frame with fn() label -> text caret ---------- */
+.lg-cursor-on, .lg-cursor-on * { cursor: none !important; }
+.lg-caret { position: fixed; left: 0; top: 0; z-index: 90; pointer-events: none; box-sizing: border-box;
+  width: 3px; height: 20px; border-radius: 2px; background: var(--accent); opacity: 0;
+  box-shadow: 0 0 10px rgba(10, 132, 255, .55); transition: opacity .25s, background .25s, box-shadow .25s; }
+.lg-caret.on { opacity: 1; }
+.lg-caret.idle { animation: lg-caret-blink 1.05s steps(1) infinite; }
+@keyframes lg-caret-blink { 50% { opacity: .15; } }
+.lg-caret.frame { background: rgba(10, 132, 255, .07); box-shadow: 0 0 0 1px rgba(10, 132, 255, .18), 0 8px 24px rgba(10, 132, 255, .18); }
+.lg-caret::before, .lg-caret::after { content: ""; position: absolute; top: -1px; bottom: -1px; width: 9px; opacity: 0;
+  border: 2px solid var(--accent); transition: opacity .2s; }
+.lg-caret::before { left: -1px; border-right: 0; border-radius: 8px 0 0 8px; }
+.lg-caret::after { right: -1px; border-left: 0; border-radius: 0 8px 8px 0; }
+.lg-caret.frame::before, .lg-caret.frame::after { opacity: 1; }
+.lg-caret.text { width: 2px; background: var(--text); box-shadow: none; animation: lg-caret-blink 1s steps(1) infinite; }
+.lg-caret.down { scale: .94; }
+.lg-tag { position: fixed; left: 0; top: 0; z-index: 91; pointer-events: none; opacity: 0;
+  padding: 3px 8px; border-radius: 7px; font: 600 11.5px/1.2 ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  color: #fff; background: rgba(12, 19, 36, .82); box-shadow: 0 6px 16px rgba(12, 19, 36, .25);
+  transition: opacity .2s, scale .3s var(--spring); scale: .85; white-space: nowrap; }
+.lg-tag.on { opacity: 1; scale: 1; }
+.lg-tag::before { content: "> "; color: #64d2ff; }
+.lg-tok { position: fixed; z-index: 85; pointer-events: none; white-space: nowrap;
+  font: 600 12px/1 ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace; color: var(--accent); }
+.lg-tok.ok { color: var(--ok); font-size: 13px; }
 
 /* ---------- glass surfaces ---------- */
 .box, details, nav, .lg-glass {
@@ -220,8 +239,6 @@ button.is-busy { --s: .97; pointer-events: none; }
 button.is-busy .lg-label::after { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor;
   border-right-color: transparent; animation: lg-rot .7s linear infinite; }
 @keyframes lg-rot { to { transform: rotate(360deg); } }
-.lg-particle { position: fixed; z-index: 80; width: 8px; height: 8px; border-radius: 50%; pointer-events: none;
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, .9), 0 0 10px currentColor; }
 
 /* ---------- inputs: recessed glass wells ---------- */
 input[type=text], input[type=url], input[type=password], input[type=email], textarea, select {

@@ -48,7 +48,7 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
 TASKS = []  # in-memory progress of pasted links
 _fails = {}  # ip -> recent failed login times
 
-ASSETS_V = "3"  # bump to bust phone/browser caches after editing static/glass.*
+ASSETS_V = "4"  # bump to bust phone/browser caches after editing static/glass.*
 CSS = f"""<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/static/glass.css?v={ASSETS_V}"><script src="/static/glass.js?v={ASSETS_V}" defer></script>"""
 

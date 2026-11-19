@@ -4,7 +4,8 @@
      other browsers keep frosted glass.
    - Light: rims face the light source (pointer on desktop, device tilt on phones); specular hotspot follows the pointer.
    - Motion: scroll reveals, split-text headings, card tilt, magnetic buttons, ripple + jelly press, particle bursts,
-     animated <details>, scroll progress, velocity skew, parallax aurora, cursor glow + ring, count-up, analog gauge. */
+     animated <details>, scroll progress, velocity skew, blueprint grid lit by the pointer, terminal-caret cursor that wraps
+     buttons in brackets with a fn() label, code-token trail, job-themed bursts, count-up, analog gauge. */
 (() => {
   "use strict";
   const doc = document, root = doc.documentElement, body = doc.body;
@@ -22,17 +23,21 @@
     return e;
   };
 
-  // ---------- world ----------
+  // ---------- world: blueprint grid (lights up near the pointer) + slow floating code glyphs ----------
   const world = mk("div", "lg-world");
   world.setAttribute("aria-hidden", "true");
-  for (let i = 1; i <= 6; i++) mk("div", "blob b" + i, world);
+  mk("div", "lg-grid", world);
+  const gridHi = mk("div", "lg-grid-hi", world);
+  ["{ }", "</>", "=>", "( )"].forEach(g => { mk("div", "lg-glyph", world).textContent = g; });
   body.prepend(world);
   mk("div", "lg-grain", body).setAttribute("aria-hidden", "true");
   const progress = mk("div", "lg-progress", body);
-  let glow = null, ring = null;
-  if (fine && !reduce) {
-    glow = mk("div", "lg-cursor", body);
-    ring = mk("div", "lg-ring", body);
+  const cursorOn = fine && !reduce;
+  let caret = null, tag = null;
+  if (cursorOn) {
+    caret = mk("div", "lg-caret idle", body);
+    tag = mk("div", "lg-tag", body);
+    root.classList.add("lg-cursor-on");
   }
   const defs = doc.createElementNS(NS, "svg");
   defs.setAttribute("aria-hidden", "true");
@@ -182,17 +187,19 @@
         { scale: "0.98 1.02", offset: 0.76 }, { scale: "1 1" }], { duration: 600, easing: "ease-out" });
     }
   }
-  const COLORS = ["#0a84ff", "#30d158", "#ffd60a", "#ff375f", "#bf5af2", "#64d2ff"];
-  function burst(x, y, n = 20) {
+  const WINS = ["200 OK", "offer++", "\u2713", "git push", "</>", "hired()", "{ }", "\u2713 sent", "merge \u2713", "200 OK"];
+  function burst(x, y, n = 10) {
     if (reduce) return;
     for (let i = 0; i < n; i++) {
-      const p = mk("span", "lg-particle", body), a = (Math.PI * 2 * i) / n + Math.random() * 0.6, d = 50 + Math.random() * 80;
-      const c = COLORS[i % COLORS.length];
-      p.style.cssText = `left:${x}px;top:${y}px;background:${c};color:${c}`;
+      const p = mk("span", "lg-tok" + (i % 3 === 0 ? " ok" : ""), body);
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.4, d = 60 + Math.random() * 90;
+      p.textContent = WINS[i % WINS.length];
+      p.style.cssText = `left:${x}px;top:${y}px`;
       p.animate([
-        { transform: "translate(-50%,-50%) scale(1)", opacity: 1 },
-        { transform: `translate(calc(-50% + ${Math.cos(a) * d}px), calc(-50% + ${Math.sin(a) * d - 20}px)) scale(.15)`, opacity: 0 },
-      ], { duration: 650 + Math.random() * 350, easing: "cubic-bezier(.2,.8,.2,1)" }).onfinish = () => p.remove();
+        { transform: "translate(-50%,-50%) scale(.6)", opacity: 0 },
+        { transform: "translate(-50%,-50%) scale(1)", opacity: 1, offset: 0.15 },
+        { transform: `translate(calc(-50% + ${Math.cos(a) * d}px), calc(-50% + ${Math.sin(a) * d}px)) rotate(${(Math.random() - 0.5) * 30}deg) scale(.9)`, opacity: 0 },
+      ], { duration: 900 + Math.random() * 400, easing: "cubic-bezier(.2,.8,.2,1)" }).onfinish = () => p.remove();
     }
   }
   doc.addEventListener("submit", e => {
@@ -297,16 +304,44 @@
   enhance(doc);
   setTimeout(() => { booted = true; }, 1500);
   new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => {
-    if (n.nodeType === 1 && !n.matches(".lg-ripple, .lg-particle, .lg-label")) enhance(n);
+    if (n.nodeType === 1 && !n.matches(".lg-ripple, .lg-tok, .lg-label")) enhance(n);
   }))).observe(body, { childList: true, subtree: true });
 
-  // ---------- pointer, tilt-light, scroll: one rAF loop ----------
-  let mx = innerWidth / 2, my = innerHeight * 0.2, gx = mx, gy = my, rx = mx, ry = my, rs = 1, wx = 0, wy = 0;
-  let hot = false, moved = true, sy = scrollY, skew = 0, lastP = -1, lastSkew = 0;
+  // ---------- pointer: caret cursor, code-token trail, light; scroll: progress, skew, grid ----------
+  const TRAIL = ["</>", "{ }", "()", ";", "=>", "git", "npm", "SQL", "API", "CV", "\u2713", "&&", "[ ]", "0x1F", "JSON", "200", "PR", "Java", "fn", "#"];
+  const fnName = el => {
+    if (el.matches("summary")) return el.parentElement.open ? "collapse()" : "expand()";
+    if (el.matches("a")) return "open()";
+    if (el.matches("input[type=checkbox]")) return "toggle()";
+    const w = (el.textContent || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").trim().split(/\s+/).filter(Boolean).slice(0, 2);
+    if (!w.length) return "click()";
+    return w[0] + w.slice(1).map(s => s[0].toUpperCase() + s.slice(1)).join("") + "()";
+  };
+  let mx = innerWidth / 2, my = innerHeight * 0.2, moved = true, sy = scrollY, skew = 0, lastP = -1, lastSkew = 0;
+  let cx = mx, cy = my, cw = 3, ch = 20, cr = 2, mode = "free", target = null, idleT = 0, trailDist = 0, lastTok = 0, px = mx, py = my;
   addEventListener("pointermove", e => {
+    if (cursorOn && e.pointerType !== "mouse") return;
     mx = e.clientX; my = e.clientY; moved = true;
     const t = e.target instanceof Element ? e.target : null;
-    hot = !!(t && t.closest("button, a, summary, input, textarea, select, label"));
+    if (cursorOn) {
+      caret.classList.add("on");
+      target = t && t.closest("button, a, summary, input[type=checkbox]");
+      mode = target ? "frame" : (t && t.closest("input, textarea, select, [contenteditable]") ? "text" : "free");
+      // code-token trail: one token per ~80px of travel, at most every 70ms
+      trailDist += Math.hypot(mx - px, my - py); px = mx; py = my;
+      const now = performance.now();
+      if (mode === "free" && trailDist > 80 && now - lastTok > 70) {
+        trailDist = 0; lastTok = now;
+        const k = mk("span", "lg-tok", body);
+        k.textContent = TRAIL[(Math.random() * TRAIL.length) | 0];
+        k.style.cssText = `left:${mx}px;top:${my}px`;
+        k.animate([
+          { transform: "translate(-50%,-50%) translateY(8px) scale(.7)", opacity: 0 },
+          { transform: "translate(-50%,-50%) scale(1)", opacity: 0.85, offset: 0.2 },
+          { transform: `translate(-50%,-50%) translate(${(Math.random() - 0.5) * 30}px, -34px) scale(.9)`, opacity: 0 },
+        ], { duration: 1100, easing: "cubic-bezier(.2,.8,.2,1)" }).onfinish = () => k.remove();
+      }
+    }
     if (!t) return;
     for (const el of [t.closest(".lg-btn"), t.closest(".lg-card")]) {
       if (!el) continue;
@@ -315,6 +350,11 @@
       el.style.setProperty("--my", (((my - r.top) / r.height) * 100).toFixed(1) + "%");
     }
   }, { passive: true });
+  if (cursorOn) {
+    doc.addEventListener("pointerleave", () => { caret.classList.remove("on"); tag.classList.remove("on"); });
+    addEventListener("pointerdown", () => caret.classList.add("down"), { passive: true });
+    addEventListener("pointerup", () => caret.classList.remove("down"), { passive: true });
+  }
   // phones: the light follows how you tilt the device (iOS needs a permission prompt, so it keeps the default light)
   if (!fine && !reduce && "DeviceOrientationEvent" in window && typeof DeviceOrientationEvent.requestPermission !== "function") {
     addEventListener("deviceorientation", e => {
@@ -325,34 +365,54 @@
     }, { passive: true });
   }
   const nav = doc.querySelector("nav");
-  function frame() {
+  function frame(now) {
     if (moved) {
       root.style.setProperty("--lg-angle", (Math.atan2(my - innerHeight / 2, mx - innerWidth / 2) * 180 / Math.PI + 90).toFixed(1) + "deg");
-      if (fine && !reduce) {
+      gridHi.style.setProperty("--cx", mx.toFixed(0) + "px");
+      gridHi.style.setProperty("--cy", my.toFixed(0) + "px");
+      if (cursorOn) {
         for (const b of mags) {
           if (!b.isConnected) { mags.delete(b); continue; }
           const r = b.getBoundingClientRect(), dx = mx - (r.left + r.width / 2), dy = my - (r.top + r.height / 2);
           const near = Math.abs(dx) < r.width / 2 + 26 && Math.abs(dy) < r.height / 2 + 20;
-          b.style.setProperty("--tx", (near ? clamp(dx * 0.22, -10, 10) : 0).toFixed(1) + "px");
-          b.style.setProperty("--ty", (near ? clamp(dy * 0.3, -6, 6) : 0).toFixed(1) + "px");
+          b.style.setProperty("--tx", (near ? clamp(dx * 0.18, -8, 8) : 0).toFixed(1) + "px");
+          b.style.setProperty("--ty", (near ? clamp(dy * 0.25, -5, 5) : 0).toFixed(1) + "px");
         }
       }
       moved = false;
+      idleT = now;
     }
-    if (glow) {
-      gx = lerp(gx, mx, 0.16); gy = lerp(gy, my, 0.16); rx = lerp(rx, mx, 0.3); ry = lerp(ry, my, 0.3); rs = lerp(rs, hot ? 1.75 : 1, 0.18);
-      glow.style.transform = `translate3d(${gx}px,${gy}px,0)`;
-      ring.style.transform = `translate3d(${rx}px,${ry}px,0) scale(${rs.toFixed(3)})`;
-      ring.classList.toggle("hot", hot);
+    if (cursorOn) {
+      // free: a terminal caret at the pointer; frame: brackets hug the button; text: an I-beam caret
+      let tx = mx, ty = my - 2, tw = 3, th = 20, tr = 2;
+      if (mode === "frame" && target && target.isConnected) {
+        const r = target.getBoundingClientRect(), pad = 6;
+        tx = r.left - pad; ty = r.top - pad; tw = r.width + pad * 2; th = r.height + pad * 2;
+        tr = Math.min((parseFloat(getComputedStyle(target).borderTopLeftRadius) || 0) + pad, th / 2);
+      } else if (mode === "text") { tx = mx - 1; ty = my - 11; tw = 2; th = 22; }
+      const k = mode === "frame" ? 0.28 : 0.55;
+      cx = lerp(cx, tx, k); cy = lerp(cy, ty, k); cw = lerp(cw, tw, 0.3); ch = lerp(ch, th, 0.3); cr = lerp(cr, tr, 0.3);
+      caret.style.transform = `translate3d(${cx.toFixed(1)}px,${cy.toFixed(1)}px,0)`;
+      caret.style.width = cw.toFixed(1) + "px";
+      caret.style.height = ch.toFixed(1) + "px";
+      caret.style.borderRadius = cr.toFixed(1) + "px";
+      caret.classList.toggle("frame", mode === "frame");
+      caret.classList.toggle("text", mode === "text");
+      caret.classList.toggle("idle", mode === "free" && now - idleT > 450);
+      const showTag = mode === "frame" && target && target.isConnected;
+      if (showTag) {
+        const label = fnName(target);
+        if (tag.textContent !== label) tag.textContent = label;
+        tag.style.transform = `translate3d(${(cx + cw / 2 - tag.offsetWidth / 2).toFixed(1)}px,${(cy - tag.offsetHeight - 8).toFixed(1)}px,0)`;
+      }
+      tag.classList.toggle("on", !!showTag);
     }
     if (!reduce) {
-      wx = lerp(wx, (mx / innerWidth - 0.5) * -34, 0.05);
-      wy = lerp(wy, (my / innerHeight - 0.5) * -34 - scrollY * 0.07, 0.08);
-      world.style.transform = `translate3d(${wx.toFixed(1)}px,${wy.toFixed(1)}px,0)`;
       const v = scrollY - sy;
       sy = scrollY;
-      skew = lerp(skew, clamp(v * 0.05, -2.5, 2.5), 0.18);
+      skew = lerp(skew, clamp(v * 0.04, -2, 2), 0.18);
       if (Math.abs(skew - lastSkew) > 0.005) { root.style.setProperty("--skew", skew.toFixed(3) + "deg"); lastSkew = skew; }
+      world.style.setProperty("--gy", (-scrollY * 0.25).toFixed(1) + "px");
     }
     const max = root.scrollHeight - innerHeight, p = max > 0 ? scrollY / max : 0;
     if (Math.abs(p - lastP) > 0.001) { progress.style.setProperty("--p", p.toFixed(4)); lastP = p; }

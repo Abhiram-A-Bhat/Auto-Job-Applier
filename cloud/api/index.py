@@ -118,7 +118,7 @@ LABEL = {"waiting": "waiting for the laptop", "processing": "tailoring your resu
          "needs_manual": "needs manual apply", "rejected": "rejected", "applied_manual": "applied manually",
          "error": "error", "cancelled": "cancelled"}
 
-ASSETS_V = "3"  # keep in sync with jobbot/webapp.py; cloud/public/static is a copy of jobbot/static
+ASSETS_V = "4"  # keep in sync with jobbot/webapp.py; cloud/public/static is a copy of jobbot/static
 CSS = f"""<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/static/glass.css?v={ASSETS_V}"><script src="/static/glass.js?v={ASSETS_V}" defer></script>"""
 
