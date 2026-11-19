@@ -6,7 +6,7 @@ import webbrowser
 
 from flask import Flask, redirect, render_template_string, request, send_file
 
-from . import db, fetchjob, formfill, memory
+from . import db, fetchjob, formfill, memory, usage
 from .config import load_master
 from .pipeline import tailor_job
 
@@ -70,6 +70,7 @@ PROJECT {{ p.name }}
 
 INDEX = """<!doctype html><title>Job applier</title>""" + CSS + """
 <nav><a href="/">Apply</a><a href="/memory">Remembered answers</a></nav>
+<div id="usage" class="box meta">{{ usage }}</div>
 <h2>Paste a job link</h2>
 <form class="box" method="post" action="/add">
  <input type="url" name="url" placeholder="https://jobs.lever.co/... / boards.greenhouse.io/... / company careers page" required>
@@ -81,6 +82,7 @@ INDEX = """<!doctype html><title>Job applier</title>""" + CSS + """
 async function poll(id, url, skip){ const el=document.getElementById(id);
  if(skip(el)) return; try{ el.innerHTML=await (await fetch(url)).text(); }catch(e){} }
 setInterval(()=>poll('panel','/panel',el=>el.contains(document.activeElement)&&document.activeElement.tagName!=='BODY'),3000);
+setInterval(()=>poll('usage','/usage',()=>false),5000);
 setInterval(()=>poll('queue','/queue',el=>el.querySelector('details[open]')),5000);
 </script>"""
 
@@ -115,7 +117,12 @@ def _queue():
 
 @app.get("/")
 def index():
-    return render_template_string(INDEX, panel=_panel(), queue=_queue())
+    return render_template_string(INDEX, panel=_panel(), queue=_queue(), usage=usage.text())
+
+
+@app.get("/usage")
+def usage_fragment():
+    return usage.text()
 
 
 @app.get("/panel")
