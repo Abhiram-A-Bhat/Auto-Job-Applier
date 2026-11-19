@@ -1,19 +1,69 @@
+import glob
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import time
 
-import anthropic
-
-from .config import cfg
+from .config import ROOT, cfg
 
 _client = None
+API_IDS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5"}
+USAGE_LOG = ROOT / "data" / "usage.jsonl"
+
+
+def _claude_bin():
+    """Claude Code executable: $CLAUDE_BIN, PATH, or the copy bundled with the Claude desktop app."""
+    found = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
+    if not found:
+        pat = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Claude-Data", "*", "claude-code", "*", "*", "claude.exe")
+        found = max(glob.glob(pat), default=None)
+    if not found:
+        raise RuntimeError("Claude Code CLI not found. Install it or set CLAUDE_BIN to claude.exe.")
+    return found
+
+
+def _log_usage(model, usage):
+    USAGE_LOG.parent.mkdir(exist_ok=True)
+    row = {"t": time.time(), "model": model, "input": usage.get("input_tokens", 0),
+           "cache_read": usage.get("cache_read_input_tokens", 0),
+           "cache_write": usage.get("cache_creation_input_tokens", 0), "output": usage.get("output_tokens", 0)}
+    with USAGE_LOG.open("a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def _text_via_cli(model, system, user):
+    """Uses your logged-in Claude subscription (no API key). Tools/MCP/skills are off so it's a plain text call."""
+    prompt = "\n\n".join(b["text"] for b in system) + "\n\n" + user + "\n\nReply with the JSON object only."
+    cmd = [_claude_bin(), "-p", "--model", model, "--tools", "", "--system-prompt",
+           "You are a JSON-only API. Output a single JSON object and nothing else.", "--output-format", "json",
+           "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"]
+    r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8", timeout=300,
+                       cwd=tempfile.gettempdir())
+    out = json.loads(r.stdout)
+    if out.get("is_error"):
+        raise RuntimeError(out.get("result", "claude CLI error"))
+    _log_usage(model, out.get("usage", {}))
+    return out["result"]
+
+
+def _text_via_api(model, system, user, max_tokens):
+    global _client
+    import anthropic
+    _client = _client or anthropic.Anthropic()
+    r = _client.messages.create(model=API_IDS.get(model, model), max_tokens=max_tokens, system=system,
+                                messages=[{"role": "user", "content": user}])
+    _log_usage(model, {"input_tokens": r.usage.input_tokens, "output_tokens": r.usage.output_tokens,
+                       "cache_read_input_tokens": getattr(r.usage, "cache_read_input_tokens", 0) or 0})
+    return r.content[0].text
 
 
 def _call(model, system, user, max_tokens):
-    global _client
-    _client = _client or anthropic.Anthropic()
-    r = _client.messages.create(model=model, max_tokens=max_tokens, system=system,
-                                messages=[{"role": "user", "content": user}])
-    text = re.sub(r"^```(?:json)?|```$", "", r.content[0].text.strip(), flags=re.M).strip()
+    text = (_text_via_api(model, system, user, max_tokens) if cfg.get("backend") == "api"
+            else _text_via_cli(model, system, user))
+    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
     return json.loads(text[text.find("{"): text.rfind("}") + 1])
 
 

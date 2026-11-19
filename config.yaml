@@ -1,7 +1,8 @@
 # Cheap model filters jobs; stronger model only tailors jobs that pass the filter.
+backend: cli             # cli = uses your Claude subscription via Claude Code (no API key); api = pay-per-token API key
 models:
-  score: claude-haiku-5-5
-  tailor: claude-sonnet-5-5
+  score: haiku
+  tailor: sonnet
 
 min_score: 65            # jobs scoring below this are skipped (no tailoring cost)
 max_tailor_per_run: 15   # cap on tailored applications per `fetch` run

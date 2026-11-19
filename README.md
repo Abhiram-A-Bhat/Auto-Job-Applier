@@ -3,8 +3,10 @@
 ```powershell
 pip install -r requirements.txt
 playwright install chromium
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
+claude login                # once; the tool uses your Claude subscription via Claude Code (backend: cli)
 python main.py app          # opens http://127.0.0.1:5000
+python main.py stats        # real token usage so far
+# Prefer pay-per-token? set backend: api in config.yaml and $env:ANTHROPIC_API_KEY
 ```
 
 ## Daily use
