@@ -89,8 +89,8 @@ def _bump():  # tells the laptop something changed, so idle polls cost only 2 Re
 
 
 # ---- app + login ---------------------------------------------------------------------------------------------
-# on Vercel, /static is served straight from cloud/static; Flask serves it when running locally
-app = Flask(__name__, static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "static"))
+# on Vercel, /static is served straight from cloud/public/static; Flask serves it when running locally
+app = Flask(__name__, static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "public", "static"))
 ON_VERCEL = bool(os.environ.get("VERCEL"))
 app.secret_key = os.environ.get("SECRET_KEY") or ("" if ON_VERCEL else "local-dev-only")
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=ON_VERCEL,
@@ -106,7 +106,7 @@ LABEL = {"waiting": "waiting for the laptop", "processing": "tailoring your resu
          "needs_manual": "needs manual apply", "rejected": "rejected", "applied_manual": "applied manually",
          "error": "error", "cancelled": "cancelled"}
 
-ASSETS_V = "3"  # keep in sync with jobbot/webapp.py; cloud/static is a copy of jobbot/static
+ASSETS_V = "3"  # keep in sync with jobbot/webapp.py; cloud/public/static is a copy of jobbot/static
 CSS = f"""<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/static/glass.css?v={ASSETS_V}"><script src="/static/glass.js?v={ASSETS_V}" defer></script>"""
 

@@ -8,3 +8,8 @@ profile/cloud_token
 cloud/.vercel/
 cloud/.env*
 .claude/
+.vercel/
+.env*.local
+
+.vercel
+.env*
