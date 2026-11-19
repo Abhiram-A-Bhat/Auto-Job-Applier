@@ -12,6 +12,10 @@ _busy = threading.Lock()
 
 
 def tailor_job(job, master, master_txt):
+    if job["company"] == "Unknown":  # page read from a job site: clean title/company/description first (Haiku)
+        info = ai.extract_job(job["description"])
+        db.update(job["id"], **{k: info[k] for k in ("title", "company", "location", "description") if info.get(k)})
+        job = db.get(job["id"])
     res = ai.tailor(job, master_txt)
     resume, cover, warns = ai.ground(res, master, master_txt)
     out = ROOT / "data" / "resumes"
@@ -54,6 +58,25 @@ def _enrich(job):
     return db.get(job["id"])
 
 
+def _discover_platforms(say):
+    """LinkedIn/Naukri/Indeed/Wellfound via your logged-in browser (see platforms.py for the ground rules)."""
+    from . import formfill, platforms  # lazy: needs Playwright
+    found = 0
+    for name in [n for n in platforms.PLATFORMS if n in platforms.enabled()]:
+        known = db.known_urls(name)
+        try:
+            rows = formfill.run_in_browser(lambda b, n=name: platforms.discover(b, n, say, known))
+        except Exception as e:
+            say(f"  ! {name}: {str(e)[:120]}")
+            continue
+        for r in rows:
+            j = platforms.to_job(name, r)
+            if sources._wanted(j, check_loc=False) and sources.salary_ok(j):  # searches are already Bengaluru/remote
+                db.insert_job(j)
+                found += 1
+    return found
+
+
 def run_fetch(say=print):
     """Discover -> free local filter -> cheap LLM score of the best few -> tailor -> queue."""
     if not _busy.acquire(blocking=False):
@@ -66,6 +89,7 @@ def run_fetch(say=print):
         for j in sources.fetch_all():
             db.insert_job(j)
             found += 1
+        found += _discover_platforms(say)
         say(f"{found} jobs matched your title/location/salary filters.")
         cands = []
         for job in db.by_status("new"):

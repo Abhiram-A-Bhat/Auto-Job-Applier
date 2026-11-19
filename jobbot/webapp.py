@@ -77,6 +77,8 @@ INDEX = """<!doctype html><title>Job applier</title>""" + CSS + """
  <input type="url" name="url" placeholder="https://jobs.lever.co/... / boards.greenhouse.io/... / company careers page" required>
  <textarea name="pasted" rows="3" placeholder="Only needed for LinkedIn / Indeed / Wellfound / Talboss or pages I can't read: paste the job description here"></textarea>
  <button class="ok">Tailor my resume</button></form>
+<form method="post" action="/login-browser" style="margin-bottom:8px"><button>Open jobbot browser to log in</button>
+ <span class="meta">log in to LinkedIn / Naukri / Indeed / Wellfound once in that window - it stays logged in</span></form>
 <form method="post" action="/fetch"><button>Find matching jobs now</button>
  <span class="meta">software jobs, 6+ LPA or salary not listed; searches automatically every few hours while this page's app is running</span></form>
 <div id="panel">{{ panel|safe }}</div>
@@ -141,7 +143,7 @@ def queue():
 def _process(task, url, pasted):
     try:
         master, txt = load_master()
-        job = fetchjob.resolve(url, pasted)
+        job = fetchjob.resolve(url, pasted, say=lambda m: task.update(msg=m))
         db.insert_job({**job, "status": "processing"})
         if db.get(job["id"])["status"] not in ("processing", "new", "scored", "skipped", "error", "rejected"):
             task.update(state="done", msg=f"Already in the system (status: {db.get(job['id'])['status']}).")
@@ -167,6 +169,19 @@ def _search(task):
         task.update(state="done")
     except (Exception, SystemExit) as e:
         task.update(state="error", msg=str(e))
+
+
+@app.post("/login-browser")
+def login_browser():
+    from . import platforms
+
+    def open_tabs(b):
+        for n in platforms.PLATFORMS:
+            if n in platforms.enabled():
+                b.new_page().goto(platforms.LOGIN[n], wait_until="domcontentloaded")
+
+    threading.Thread(target=lambda: formfill.run_in_browser(open_tabs), daemon=True).start()
+    return redirect("/")
 
 
 @app.post("/fetch")

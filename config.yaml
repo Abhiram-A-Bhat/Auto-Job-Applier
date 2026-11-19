@@ -18,11 +18,20 @@ search:
   min_skill_overlap: 2    # free local check: posting must mention at least N skills from your resume
   include_titles: ["engineer", "developer", "sde", "backend", "intern", "graduate", "trainee", "software", "programmer"]
   exclude_titles: ["senior", "staff", "principal", "lead", "director", "manager", "head", "vp ", "architect"]
-  locations: ["remote", "india", "bengaluru", "bangalore", "hyderabad", "pune", "mumbai", "gurgaon", "gurugram",
-              "noida", "chennai", "delhi"]
-  adzuna_where: ""        # e.g. "Bengaluru" to narrow Adzuna to one city; "" = all of India
+  locations: ["remote", "bengaluru", "bangalore"]   # remote jobs restricted to other countries are dropped automatically
+  adzuna_where: ""        # Adzuna is filtered by `locations` too
   queries: ["software engineer", "backend developer", "full stack developer", "java developer",
             "software developer intern", "python developer", "sde"]
+
+# Job sites driven in YOUR logged-in jobbot browser (click "Open jobbot browser to log in" once).
+# Their terms forbid automation and accounts can get restricted - keep these numbers modest. [] turns it off.
+# Logins and "verify you are human" checks are never bypassed: it pauses until you clear them.
+platforms:
+  enabled: [linkedin, naukri, indeed, wellfound]
+  queries: ["software engineer", "backend developer", "java developer"]   # each searched in Bengaluru + remote
+  max_jobs_per_platform: 15   # new job pages read per platform per search
+  delay_seconds: 6            # pause between page loads
+  linkedin_easy_apply_only: true  # Easy Apply forms can be filled in-site; others jump to company sites
 
 sources:
   adzuna: true            # needs free keys: $env:ADZUNA_APP_ID and $env:ADZUNA_APP_KEY (skipped with a note if missing)

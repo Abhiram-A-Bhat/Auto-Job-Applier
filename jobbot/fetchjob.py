@@ -13,6 +13,10 @@ MANUAL_HOSTS = ("linkedin.com", "indeed.com", "wellfound.com", "angel.co", "talb
 
 
 def is_manual(url):
+    from . import platforms
+    p = platforms.platform_of(url)
+    if p and p in platforms.enabled():
+        return False
     host = urlparse(url).netloc.lower()
     return any(h in host for h in MANUAL_HOSTS)
 
@@ -51,12 +55,25 @@ def _ashby(name, jid, url):
     raise ValueError("job not found on Ashby board")
 
 
-def resolve(url, pasted=""):
+def resolve(url, pasted="", say=print):
+    from . import platforms
     url = url.strip()
     pasted = (pasted or "").strip()
     u = urlparse(url)
     host, parts = u.netloc.lower(), [p for p in u.path.split("/") if p]
     uid = hashlib.md5(url.split("?")[0].encode()).hexdigest()[:12]
+    plat = platforms.platform_of(url)
+    if plat and plat in platforms.enabled():  # read it in your logged-in browser (or use the pasted text)
+        canon = platforms.canonical(plat, url) or url
+        if len(pasted) >= 200:
+            info = ai.extract_job(pasted)
+            return dict(id=platforms.job_id(plat, canon), source=plat, company=info.get("company") or "Unknown",
+                        title=info.get("title") or "Role", location=info.get("location", ""), url=canon,
+                        apply_url=canon, description=info.get("description") or pasted)
+        from . import formfill
+        say(f"Opening the job in the jobbot browser ({plat})...")
+        r = formfill.run_in_browser(lambda b: platforms.read_new_page(b, canon, say))
+        return platforms.to_job(plat, {**r, "url": canon})
     if is_manual(url):
         if len(pasted) < 200:
             raise ValueError("For LinkedIn/Indeed/Wellfound/Talboss I don't fetch or automate the site. "

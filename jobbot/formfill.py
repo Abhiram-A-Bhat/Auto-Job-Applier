@@ -1,9 +1,11 @@
 """Memory-backed form filler. Scans any application form, fills what it knows (resume contact details +
 answers.json), and ASKS you (in the web app) only for what it doesn't know, then remembers the answer."""
 import json
+import os
 import queue
 import re
 import threading
+from concurrent.futures import Future
 
 from playwright.sync_api import sync_playwright
 
@@ -202,7 +204,17 @@ def _apply_url(job):
 
 
 def fill_job(page, job, master, master_txt):
+    from . import platforms
     ctx = Ctx(page, job, master, master_txt)
+    notes = []
+    if job["source"] in platforms.PLATFORMS:
+        page, note = platforms.open_application(page, job, lambda m: db.update(job["id"], notes=m))
+        ctx.page = page
+        if note:
+            notes.append(note)
+        seen = 3 if note else platforms.step_through(page, lambda: _fill_target(page, ctx))
+        _finish(page, job, ctx, seen, notes, platforms.SUBMIT)
+        return
     page.goto(_apply_url(job), wait_until="domcontentloaded", timeout=45000)
     page.wait_for_timeout(3000)
     seen = 0
@@ -220,7 +232,10 @@ def fill_job(page, job, master, master_txt):
             page.wait_for_timeout(3000)
         except Exception:
             break
-    notes = []
+    _finish(page, job, ctx, seen, notes, re.compile(r"submit|apply", re.I))
+
+
+def _finish(page, job, ctx, seen, notes, submit_rx):
     if seen < 3:
         notes.append("Couldn't find an application form on this page - open the application manually.")
     if ctx.skipped:
@@ -231,7 +246,7 @@ def fill_job(page, job, master, master_txt):
     if captcha:
         notes.append("Captcha on the page - you'll need to solve it.")
     if cfg["auto_click_submit"] and seen >= 3 and not ctx.failed and not captcha:
-        page.get_by_role("button", name=re.compile(r"submit|apply", re.I)).last.click()
+        page.get_by_role("button", name=submit_rx).last.click()
         page.wait_for_timeout(4000)
         notes.append("Submit was clicked automatically - confirm in the browser tab.")
     db.update(job["id"], status="filled", notes="\n".join(notes))
@@ -240,34 +255,57 @@ def fill_job(page, job, master, master_txt):
 # ---- single background worker that owns the (visible) browser -------------------------------------------------
 _jobs = queue.Queue()
 _started = False
+_lock = threading.Lock()
+
+
+def _start():
+    global _started
+    with _lock:
+        if not _started:
+            _started = True
+            threading.Thread(target=_worker, daemon=True).start()
 
 
 def enqueue(job_id):
-    global _started
-    if not _started:
-        _started = True
-        threading.Thread(target=_worker, daemon=True).start()
-    _jobs.put(job_id)
+    _start()
+    _jobs.put(("fill", job_id, None))
+
+
+def run_in_browser(fn, timeout=7200):
+    """Run fn(browser_context) on the worker thread that owns the (logged-in) browser; wait for its result."""
+    _start()
+    fut = Future()
+    _jobs.put(("call", fn, fut))
+    return fut.result(timeout)
 
 
 def _worker():
     master, master_txt = load_master()
     with sync_playwright() as p:
-        def launch():
-            return p.chromium.launch_persistent_context(str(ROOT / "data" / "browser"), headless=False, viewport=None)
-        browser = launch()
+        state = {"b": None}
+
+        def browser():
+            if state["b"] is None:  # first use, or the user closed the window
+                b = p.chromium.launch_persistent_context(str(ROOT / "data" / "browser"), viewport=None,
+                                                         headless=os.environ.get("JOBBOT_HEADLESS") == "1")
+                b.on("close", lambda *_: state.update(b=None))
+                state["b"] = b
+            return state["b"]
+
         while True:
-            job = db.get(_jobs.get())
+            kind, arg, fut = _jobs.get()
+            if kind == "call":
+                try:
+                    fut.set_result(arg(browser()))
+                except Exception as e:
+                    fut.set_exception(e)
+                continue
+            job = db.get(arg)
             if not job or job["status"] not in ("approved", "filling", "awaiting_input"):
                 continue
             db.update(job["id"], status="filling")
             try:
-                try:
-                    page = browser.new_page()
-                except Exception:  # user closed the window - reopen
-                    browser = launch()
-                    page = browser.new_page()
-                fill_job(page, job, master, master_txt)
+                fill_job(browser().new_page(), job, master, master_txt)
             except Cancelled:
                 pass
             except Exception as e:

@@ -30,7 +30,15 @@ Filters: tech titles, India/remote-from-India locations, salary >= `min_salary_l
 see `unknown_salary`), then a free local skill-overlap check. Only the best `max_score_per_run` are scored by AI and
 at most `max_tailor_per_run` are tailored - those two numbers control token usage.
 `auto_approve_min_score` lets high-fit jobs start filling without a click; you still press Submit unless
-`auto_click_submit: true`. LinkedIn/Indeed/Naukri/Wellfound are never scraped.
+`auto_click_submit: true`. Only Bengaluru or remote jobs (remote-in-another-country is dropped).
+
+## LinkedIn / Naukri / Indeed / Wellfound
+Click "Open jobbot browser to log in" and log in to each site once in that window (it remembers you).
+Searches then also read those sites in that window, and pasted links from them get filled like any other form
+(LinkedIn Easy Apply / Indeed multi-step flows are stepped through; on Naukri you press Apply yourself, because
+that button submits instantly). Login walls and "verify you are human" checks are never bypassed - it pauses
+until you clear them. These sites' terms forbid automation and can restrict accounts: keep
+`platforms.max_jobs_per_platform` modest, or set `platforms.enabled: []` to switch it off.
 
 ## Guardrails
 Employer/title/dates/education come from the master resume, skills not in it are dropped, any number not in it is

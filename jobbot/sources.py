@@ -149,7 +149,7 @@ def fetch_all():
     if cfg["sources"].get("adzuna"):
         for q in cfg["search"].get("queries", ["software engineer"]):
             for j in _safe(f"adzuna/{q}", adzuna(q)):
-                if _wanted(j, check_loc=False) and salary_ok(j):
+                if _wanted(j) and salary_ok(j):
                     yield j
     if cfg["sources"].get("remotive"):
         for j in _safe("remotive", remotive()):

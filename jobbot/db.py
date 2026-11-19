@@ -83,6 +83,11 @@ def update(job_id, **fields):
         c.execute(f"UPDATE jobs SET {cols} WHERE id=?", (*fields.values(), job_id))
 
 
+def known_urls(source):
+    with conn() as c:
+        return {r[0] for r in c.execute("SELECT url FROM jobs WHERE source=?", (source,))}
+
+
 def counts():
     with conn() as c:
         return {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM jobs GROUP BY status")}
