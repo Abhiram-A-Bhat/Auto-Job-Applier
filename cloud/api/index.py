@@ -202,8 +202,8 @@ def _ip():
 
 @app.before_request
 def guard():
-    if request.path.startswith("/api/whatsapp/"):  # authenticated by Meta's verify token / payload signature
-        return None
+    if request.path.startswith("/api/whatsapp/") or request.path in ("/privacy", "/data-deletion"):
+        return None  # webhook is authenticated by Meta's verify token / signature; policy pages are public
     if request.path.startswith("/api/agent/"):
         ok = AGENT_TOKEN and hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + AGENT_TOKEN)
         return None if ok else (jsonify(error="unauthorized"), 401)
@@ -335,6 +335,33 @@ def agent_push():
     return jsonify(ok=True)
 
 
+# ---- public policy pages (Meta requires a privacy policy URL to publish the app) --------------------------------
+POLICY = "<!doctype html><title>{{ t }}</title>" + CSS + """<main id="main"><h2>{{ t }}</h2><div class="box">{{ body|safe }}</div></main>"""
+PRIVACY = """<p><b>Job applier</b> is a personal tool run by its single owner to queue job links and track their own
+job applications. It is not offered to the public.</p>
+<p><b>What it receives:</b> WhatsApp messages sent to the bot's number by the owner's own allow-listed phone number
+(the text and links in those messages), and job links/answers entered on this site after logging in.
+Messages from any other number are ignored and not stored.</p>
+<p><b>What it stores:</b> the queued job links, their status, and short status notes, in a private database used only by
+this app. Each message ID is kept for 24 hours to avoid processing duplicates.</p>
+<p><b>Sharing:</b> nothing is sold or shared with third parties. Data is processed only by the hosting provider (Vercel),
+the database provider (Redis), and Meta's WhatsApp Cloud API to deliver replies.</p>
+<p><b>Deletion:</b> see <a href="/data-deletion">data deletion</a>.</p>"""
+DELETION = """<p>To delete your data, send <b>delete my data</b> to the bot on WhatsApp, or email the owner at the address
+listed on this app's Meta developer page. Queued links and statuses are removed from the database, and message IDs expire
+automatically after 24 hours.</p>"""
+
+
+@app.get("/privacy")
+def privacy():
+    return render_template_string(POLICY, t="Privacy policy", body=PRIVACY)
+
+
+@app.get("/data-deletion")
+def data_deletion():
+    return render_template_string(POLICY, t="Data deletion", body=DELETION)
+
+
 # ---- WhatsApp bot (official Cloud API; your personal WhatsApp stays a normal account) ---------------------------
 WA_VERIFY = os.environ.get("WA_VERIFY_TOKEN", "")
 WA_SECRET = os.environ.get("WA_APP_SECRET", "")
@@ -385,6 +412,12 @@ def wa_notify(it):
 def _wa_handle(frm, text):
     low = text.strip().lower()
     items = _all("items", "item:")
+    if low == "delete my data":
+        mine = [i for i in items if i.get("wa_from") == frm]
+        for i in mine:
+            _delete("item:", "items", i["id"])
+        _bump()
+        return f"\U0001F5D1 Deleted {len(mine)} queued item(s) that came from this chat."
     m = re.match(r"^(approve|reject)\s+([a-f0-9]{4,12})\b", low)
     if m:
         hits = [i for i in items if i["id"].startswith(m[2])]
