@@ -58,9 +58,21 @@ class MemStore:
         raise ValueError(op)
 
 
+class RedisTcpStore:
+    """Redis Cloud / any redis:// URL (Vercel's official Redis integration sets REDIS_URL)."""
+    def __init__(self, url):
+        import redis
+        self.r = redis.from_url(url, decode_responses=True, socket_timeout=10)
+
+    def cmd(self, *args):
+        return self.r.execute_command(*[str(a) for a in args])
+
+
 _url = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
 _tok = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
-store = RedisStore(_url, _tok) if _url and _tok else MemStore()
+_redis_url = os.environ.get("REDIS_URL") or os.environ.get("KV_URL")
+store = (RedisStore(_url, _tok) if _url and _tok else
+         RedisTcpStore(_redis_url) if _redis_url else MemStore())
 
 
 def _all(zkey, prefix):
