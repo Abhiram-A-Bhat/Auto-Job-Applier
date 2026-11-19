@@ -1,23 +1,37 @@
-# Cheap model filters jobs; stronger model only tailors jobs that pass the filter.
 backend: cli             # cli = uses your Claude subscription via Claude Code (no API key); api = pay-per-token API key
 models:
   score: haiku
   tailor: sonnet
 
-min_score: 65            # jobs scoring below this are skipped (no tailoring cost)
-max_tailor_per_run: 15   # cap on tailored applications per `fetch` run
-auto_click_submit: false # false = fill the form, YOU press Submit. Turn on after you trust it.
-ask_optional: false      # false = optional fields you've never answered are left blank instead of asked
+min_score: 65             # jobs scoring below this are skipped (no tailoring cost)
+max_score_per_run: 20     # LLM-scores only the best-matching N new jobs per search (the free local filter ranks them)
+max_tailor_per_run: 10    # cap on tailored applications per search - this is your main token-cost control
+auto_fetch_hours: 24      # while the app is open, search for new jobs every N hours (0 = only when you click)
+auto_approve_min_score: 0 # 0 = you approve every job. e.g. 85 = jobs scoring 85+ start filling without a click
+auto_click_submit: false  # false = form is filled, YOU press Submit. Turn on only after you trust it.
+ask_optional: false       # false = optional fields you've never answered are left blank instead of asked
 
 search:
-  include_titles: ["engineer", "developer", "sde", "backend", "intern", "graduate", "trainee", "software"]
-  exclude_titles: ["senior", "staff", "principal", "lead", "director", "manager", "head", "vp "]
-  locations: ["remote", "india", "bengaluru", "bangalore"]   # [] = accept any location
+  min_salary_lpa: 6       # lakhs per annum
+  unknown_salary: include # most Indian postings hide pay. include = keep them, flagged "salary not listed"; skip = drop
+  max_days_old: 7
+  min_skill_overlap: 2    # free local check: posting must mention at least N skills from your resume
+  include_titles: ["engineer", "developer", "sde", "backend", "intern", "graduate", "trainee", "software", "programmer"]
+  exclude_titles: ["senior", "staff", "principal", "lead", "director", "manager", "head", "vp ", "architect"]
+  locations: ["remote", "india", "bengaluru", "bangalore", "hyderabad", "pune", "mumbai", "gurgaon", "gurugram",
+              "noida", "chennai", "delhi"]
+  adzuna_where: ""        # e.g. "Bengaluru" to narrow Adzuna to one city; "" = all of India
+  queries: ["software engineer", "backend developer", "full stack developer", "java developer",
+            "software developer intern", "python developer", "sde"]
 
-# Company board names (used by `fetch`). Find one from a careers URL:
-#   boards.greenhouse.io/<token>   jobs.lever.co/<slug>   jobs.ashbyhq.com/<name>
-# Unknown/invalid names are just skipped with a warning. These are examples; edit freely.
 sources:
-  greenhouse: [stripe, figma, airbnb]
-  lever: [palantir]
-  ashby: [ramp, notion]
+  adzuna: true            # needs free keys: $env:ADZUNA_APP_ID and $env:ADZUNA_APP_KEY (skipped with a note if missing)
+  remotive: true
+  # Company boards (public APIs). Verified to exist; add more from careers URLs:
+  #   boards.greenhouse.io/<token>   jobs.lever.co/<slug>   jobs.ashbyhq.com/<name>
+  greenhouse: [razorpaysoftwareprivatelimited, groww, slice, druva, inmobi, databricks, cloudflare, datadog, elastic,
+               gitlab, mongodb, twilio, okta, grafanalabs, vercel, stripe, airbnb, figma, anthropic, scaleai, brex,
+               coinbase, samsara, pinterest, reddit, dropbox, lyft, instacart, robinhood, affirm, asana, gusto,
+               toast, block, netlify, squarespace]
+  lever: [cred, meesho]
+  ashby: [atlan, snowflake, supabase, notion, ramp, openai, linear, plaid, cohere, tekion]

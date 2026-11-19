@@ -2,13 +2,14 @@
 It asks you (here) only for answers it doesn't remember. Nothing is submitted without you."""
 import json
 import threading
+import time
 import webbrowser
 
 from flask import Flask, redirect, render_template_string, request, send_file
 
 from . import db, fetchjob, formfill, memory, usage
-from .config import load_master
-from .pipeline import tailor_job
+from .config import cfg, load_master
+from .pipeline import run_fetch, tailor_job
 
 app = Flask(__name__)
 TASKS = []  # in-memory progress of pasted links
@@ -46,7 +47,7 @@ PANEL = """
 
 QUEUE = """
 <h3>Approval queue ({{ jobs|length }}) <span class="meta">{{ counts }}</span></h3>
-{% for j in jobs %}<details><summary>{{ j.title }} - {{ j.company }} <span class="meta">| {{ j.location }} | fit {{ j.score if j.score is not none else '-' }} | {{ j.source }}</span></summary>
+{% for j in jobs %}<details><summary>{{ j.title }} - {{ j.company }} <span class="meta">| {{ j.location }} | fit {{ j.score if j.score is not none else '-' }} | {{ ('%.1f LPA' % j.salary_lpa) if j.salary_lpa else 'salary not listed' }} | {{ j.source }}</span></summary>
  {% if j.score_reason %}<p>{{ j.score_reason }}</p>{% endif %}
  {% for w in j.warns %}<div class="warn">{{ w }}</div>{% endfor %}
  <p><a href="{{ j.url }}" target="_blank">Open job posting</a> | <a href="/pdf/{{ j.id }}" target="_blank">Open tailored PDF</a></p>
@@ -76,6 +77,8 @@ INDEX = """<!doctype html><title>Job applier</title>""" + CSS + """
  <input type="url" name="url" placeholder="https://jobs.lever.co/... / boards.greenhouse.io/... / company careers page" required>
  <textarea name="pasted" rows="3" placeholder="Only needed for LinkedIn / Indeed / Wellfound / Talboss or pages I can't read: paste the job description here"></textarea>
  <button class="ok">Tailor my resume</button></form>
+<form method="post" action="/fetch"><button>Find matching jobs now</button>
+ <span class="meta">software jobs, 6+ LPA or salary not listed; searches automatically every few hours while this page's app is running</span></form>
 <div id="panel">{{ panel|safe }}</div>
 <div id="queue">{{ queue|safe }}</div>
 <script>
@@ -158,6 +161,31 @@ def add():
     return redirect("/")
 
 
+def _search(task):
+    try:
+        run_fetch(lambda m: task.update(msg=m))
+        task.update(state="done")
+    except (Exception, SystemExit) as e:
+        task.update(state="error", msg=str(e))
+
+
+@app.post("/fetch")
+def fetch():
+    task = {"url": "Job search", "state": "working", "msg": "starting..."}
+    TASKS.append(task)
+    threading.Thread(target=_search, args=(task,), daemon=True).start()
+    return redirect("/")
+
+
+def _auto_search_loop(hours):
+    time.sleep(90)  # let the app settle first
+    while True:
+        task = {"url": "Scheduled job search", "state": "working", "msg": "starting..."}
+        TASKS.append(task)
+        _search(task)
+        time.sleep(hours * 3600)
+
+
 @app.post("/answer/<int:qid>")
 def answer(qid):
     if request.form.get("skip"):
@@ -214,5 +242,7 @@ def run():
             db.update(j["id"], status="approved")
     for j in db.by_status("approved"):
         formfill.enqueue(j["id"])
+    if cfg.get("auto_fetch_hours"):
+        threading.Thread(target=_auto_search_loop, args=(cfg["auto_fetch_hours"],), daemon=True).start()
     threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5000")).start()
     app.run(host="127.0.0.1", port=5000, threaded=True, use_reloader=False)

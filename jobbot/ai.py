@@ -77,7 +77,9 @@ def score(job, master_txt):
     sys = [{"type": "text", "text": (
         "You judge how well a job fits a candidate, using ONLY the master resume. Be strict: 90+ = strong "
         "match on core requirements, 70-89 = good, <70 = stretch/mismatch (seniority, missing must-have "
-        'skills, wrong domain). Reply with JSON only: {"score": int, "reason": "one sentence"}')},
+        'skills, wrong domain). The candidate lives in India and is a final-year student with about 3 months of '
+        "internship experience: score under 40 for roles restricted to another country/region (e.g. 'Remote - US') "
+        'or requiring 2+ years of experience. Reply with JSON only: {"score": int, "reason": "one sentence"}')},
         _resume_block(master_txt)]
     user = f"JOB: {job['title']} at {job['company']} ({job['location']})\n\n{job['description'][:6000]}"
     return _call(cfg["models"]["score"], sys, user, 200)

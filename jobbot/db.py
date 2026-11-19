@@ -19,6 +19,10 @@ def conn():
         score INTEGER, score_reason TEXT, resume_json TEXT, cover TEXT, pdf_path TEXT,
         warnings TEXT, notes TEXT, created REAL, updated REAL)"""
     )
+    try:
+        c.execute("ALTER TABLE jobs ADD COLUMN salary_lpa REAL")  # migration for older databases
+    except sqlite3.OperationalError:
+        pass
     c.execute(
         """CREATE TABLE IF NOT EXISTS questions(
         id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, label TEXT, kind TEXT, options TEXT,
@@ -54,10 +58,10 @@ def insert_job(j):
     with conn() as c:
         c.execute(
             """INSERT OR IGNORE INTO jobs(id,source,company,title,location,url,apply_url,
-            description,status,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            description,status,created,updated,salary_lpa) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (j["id"], j["source"], j["company"], j["title"], j.get("location", ""), j["url"],
              j.get("apply_url") or j["url"], j["description"], j.get("status", "new"),
-             time.time(), time.time()),
+             time.time(), time.time(), j.get("salary_lpa")),
         )
 
 

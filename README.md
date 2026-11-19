@@ -22,7 +22,15 @@ python main.py stats        # real token usage so far
 LinkedIn / Indeed / Wellfound / Talboss links are not fetched or automated: paste the job description in the box,
 get the tailored PDF, apply yourself, click "I applied".
 
-Optional: `python main.py fetch` auto-discovers jobs from company boards listed in `config.yaml` (cheap Haiku filter first).
+## Auto job search
+While the app runs it searches every `auto_fetch_hours` (or click "Find matching jobs now", or `python main.py fetch`):
+company boards (Greenhouse/Lever/Ashby, list in `config.yaml`), Remotive, and Adzuna India
+(free keys from developer.adzuna.com -> `$env:ADZUNA_APP_ID`, `$env:ADZUNA_APP_KEY`).
+Filters: tech titles, India/remote-from-India locations, salary >= `min_salary_lpa` (or "salary not listed",
+see `unknown_salary`), then a free local skill-overlap check. Only the best `max_score_per_run` are scored by AI and
+at most `max_tailor_per_run` are tailored - those two numbers control token usage.
+`auto_approve_min_score` lets high-fit jobs start filling without a click; you still press Submit unless
+`auto_click_submit: true`. LinkedIn/Indeed/Naukri/Wellfound are never scraped.
 
 ## Guardrails
 Employer/title/dates/education come from the master resume, skills not in it are dropped, any number not in it is
