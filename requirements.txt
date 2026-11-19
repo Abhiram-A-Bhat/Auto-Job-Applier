@@ -1,0 +1,6 @@
+anthropic
+httpx
+pyyaml
+reportlab
+flask
+playwright

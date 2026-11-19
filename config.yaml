@@ -1,0 +1,22 @@
+# Cheap model filters jobs; stronger model only tailors jobs that pass the filter.
+models:
+  score: claude-haiku-5-5
+  tailor: claude-sonnet-5-5
+
+min_score: 65            # jobs scoring below this are skipped (no tailoring cost)
+max_tailor_per_run: 15   # cap on tailored applications per `fetch` run
+auto_click_submit: false # false = fill the form, YOU press Submit. Turn on after you trust it.
+ask_optional: false      # false = optional fields you've never answered are left blank instead of asked
+
+search:
+  include_titles: ["engineer", "developer", "sde", "backend", "intern", "graduate", "trainee", "software"]
+  exclude_titles: ["senior", "staff", "principal", "lead", "director", "manager", "head", "vp "]
+  locations: ["remote", "india", "bengaluru", "bangalore"]   # [] = accept any location
+
+# Company board names (used by `fetch`). Find one from a careers URL:
+#   boards.greenhouse.io/<token>   jobs.lever.co/<slug>   jobs.ashbyhq.com/<name>
+# Unknown/invalid names are just skipped with a warning. These are examples; edit freely.
+sources:
+  greenhouse: [stripe, figma, airbnb]
+  lever: [palantir]
+  ashby: [ramp, notion]
