@@ -18,6 +18,16 @@ laptop must be running the app. Allow Python through Windows Firewall on **Priva
 Away from home: install Tailscale on both laptop and phone and open `http://<laptop-tailscale-ip>:5000`.
 Set `server.host: 127.0.0.1` in config.yaml to make it laptop-only again.
 
+## Cloud inbox (Vercel) - use it from anywhere
+`cloud/` is a small Vercel app: paste links, approve jobs and answer form questions from your phone anywhere.
+It only stores the queue (Upstash Redis). The laptop does the real work (tailoring with your Claude login,
+filling forms in the logged-in browser), so while it's off, links simply wait; when `python main.py app` runs
+again it processes them in the order you added them, and approved jobs are applied oldest first.
+Setup: deploy `cloud/` to Vercel, add the Upstash Redis integration, set env vars `APP_EMAIL`,
+`APP_PASSWORD_HASH`, `SECRET_KEY`, `AGENT_TOKEN`; put the same token in `profile/cloud_token` and the URL in
+`config.yaml` -> `cloud.url`. `cloud.auto_approve_pasted: true` makes phone links apply without an approval click;
+`auto_click_submit: true` lets approved forms submit without you at the laptop.
+
 ## Daily use
 1. Paste a job link in the app. Greenhouse / Lever / Ashby links and most company career pages work directly.
 2. It tailors your resume + cover letter (rules in `jobbot/ai.py`) and puts it in the approval queue.

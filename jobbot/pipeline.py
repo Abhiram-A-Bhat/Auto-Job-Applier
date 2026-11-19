@@ -25,6 +25,19 @@ def tailor_job(job, master, master_txt):
               warnings=json.dumps(warns))
 
 
+def process_link(url, pasted="", say=print):
+    """Pasted link (local app or cloud inbox) -> job read -> tailored -> queued. Returns (job_id, message)."""
+    master, txt = load_master()
+    job = fetchjob.resolve(url, pasted, say=say)
+    db.insert_job({**job, "status": "processing"})
+    cur = db.get(job["id"])
+    if cur["status"] not in ("processing", "new", "scored", "skipped", "error", "rejected"):
+        return job["id"], f"Already in the system (status: {cur['status']})."
+    db.update(job["id"], status="processing", description=job["description"])
+    tailor_job(db.get(job["id"]), master, txt)
+    return job["id"], f"Queued for approval: {job['title']} - {job['company']}"
+
+
 def overlap(job, skills):
     """Free, local relevance check: how many of your skills appear in the posting."""
     text = (job["title"] + " " + job["description"]).lower()

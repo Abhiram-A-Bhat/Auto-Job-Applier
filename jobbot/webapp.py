@@ -13,7 +13,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from . import db, fetchjob, formfill, memory, usage
 from .config import ROOT, cfg, load_master
-from .pipeline import run_fetch, tailor_job
+from .pipeline import process_link, run_fetch
 
 AUTH = ROOT / "profile" / "auth.json"     # {email, hash} - never the plain password; git-ignored
 SECRET = ROOT / "profile" / "secret.key"  # signs the login cookie; git-ignored
@@ -229,15 +229,8 @@ def queue():
 
 def _process(task, url, pasted):
     try:
-        master, txt = load_master()
-        job = fetchjob.resolve(url, pasted, say=lambda m: task.update(msg=m))
-        db.insert_job({**job, "status": "processing"})
-        if db.get(job["id"])["status"] not in ("processing", "new", "scored", "skipped", "error", "rejected"):
-            task.update(state="done", msg=f"Already in the system (status: {db.get(job['id'])['status']}).")
-            return
-        db.update(job["id"], status="processing", description=job["description"])
-        tailor_job(db.get(job["id"]), master, txt)
-        task.update(state="done", msg=f"Queued for approval: {job['title']} - {job['company']}")
+        _, msg = process_link(url, pasted, say=lambda m: task.update(msg=m))
+        task.update(state="done", msg=msg)
     except (Exception, SystemExit) as e:
         task.update(state="error", msg=str(e))
 
@@ -342,8 +335,10 @@ def run():
     for s in ("filling", "awaiting_input"):  # left over from a previous run: re-queue
         for j in db.by_status(s):
             db.update(j["id"], status="approved")
-    for j in db.by_status("approved"):
+    for j in db.by_status("approved", "created ASC"):  # oldest first: applications go out in queue order
         formfill.enqueue(j["id"])
+    from . import cloudsync
+    cloudsync.start()
     if cfg.get("auto_fetch_hours"):
         threading.Thread(target=_auto_search_loop, args=(cfg["auto_fetch_hours"],), daemon=True).start()
     srv = cfg.get("server") or {}

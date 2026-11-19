@@ -4,3 +4,6 @@ profile/answers.json
 profile/auth.json
 profile/secret.key
 __pycache__/
+profile/cloud_token
+cloud/.vercel/
+cloud/.env*

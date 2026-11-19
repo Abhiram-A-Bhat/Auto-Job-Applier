@@ -83,6 +83,12 @@ def update(job_id, **fields):
         c.execute(f"UPDATE jobs SET {cols} WHERE id=?", (*fields.values(), job_id))
 
 
+def by_statuses(statuses):
+    with conn() as c:
+        q = f"SELECT * FROM jobs WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY created"
+        return [dict(r) for r in c.execute(q, tuple(statuses))]
+
+
 def known_urls(source):
     with conn() as c:
         return {r[0] for r in c.execute("SELECT url FROM jobs WHERE source=?", (source,))}
