@@ -7,3 +7,4 @@ __pycache__/
 profile/cloud_token
 cloud/.vercel/
 cloud/.env*
+.claude/

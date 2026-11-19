@@ -89,7 +89,8 @@ def _bump():  # tells the laptop something changed, so idle polls cost only 2 Re
 
 
 # ---- app + login ---------------------------------------------------------------------------------------------
-app = Flask(__name__)
+# on Vercel, /static is served straight from cloud/static; Flask serves it when running locally
+app = Flask(__name__, static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "static"))
 ON_VERCEL = bool(os.environ.get("VERCEL"))
 app.secret_key = os.environ.get("SECRET_KEY") or ("" if ON_VERCEL else "local-dev-only")
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=ON_VERCEL,
@@ -105,18 +106,9 @@ LABEL = {"waiting": "waiting for the laptop", "processing": "tailoring your resu
          "needs_manual": "needs manual apply", "rejected": "rejected", "applied_manual": "applied manually",
          "error": "error", "cancelled": "cancelled"}
 
-CSS = """<meta name="viewport" content="width=device-width, initial-scale=1"><style>
-body{font:16px system-ui;max-width:900px;margin:16px auto;padding:0 16px;background:#fafafa;color:#222;overflow-wrap:anywhere}
-details,.box{background:#fff;border:1px solid #ddd;border-radius:8px;margin:10px 0;padding:10px 14px}
-summary{cursor:pointer;font-weight:600}.meta{color:#666;font-weight:400}
-.warn{background:#fff0f0;border:1px solid #e99;padding:6px 10px;border-radius:6px;margin:8px 0}
-.ask{background:#fffbe6;border-color:#e6c200}.on{color:#1a7f37}.off{color:#b35900}
-input[type=text],input[type=url],input[type=password],textarea,select{width:100%;padding:8px;box-sizing:border-box;margin:4px 0;font-size:16px}
-button{min-height:40px;padding:6px 14px;border-radius:6px;border:1px solid #999;background:#eee;font-size:15px}
-.ok{background:#d9f2d9}.no{background:#f5d9d9}pre{white-space:pre-wrap;background:#f4f4f4;padding:8px;border-radius:6px}
-nav{display:flex;align-items:center;gap:8px}
-@media (max-width:600px){button{width:100%;margin:4px 0} form.inline{display:block!important}}
-</style>"""
+ASSETS_V = "3"  # keep in sync with jobbot/webapp.py; cloud/static is a copy of jobbot/static
+CSS = f"""<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/glass.css?v={ASSETS_V}"><script src="/static/glass.js?v={ASSETS_V}" defer></script>"""
 
 LOGIN = "<!doctype html><title>Log in</title>" + CSS + """
 <h2>Job applier</h2>{% if msg %}<div class="warn">{{ msg }}</div>{% endif %}
@@ -127,8 +119,10 @@ LOGIN = "<!doctype html><title>Log in</title>" + CSS + """
  <button class="ok">Log in</button></form>"""
 
 HOME = "<!doctype html><title>Job applier</title>" + CSS + """
-<nav><b>Job applier</b><span class="{{ 'on' if online else 'off' }}">{{ laptop }}</span>
+<nav><b>Job applier</b><span class="led {{ 'on' if online else 'off' }}">{{ laptop }}</span>
 <form method="post" action="/logout" style="margin-left:auto"><button>Log out</button></form></nav>
+<main id="main">
+<h2>Paste a job link</h2>
 <form class="box" method="post" action="/add">
  <input type="url" name="url" placeholder="Paste a job link" required>
  <textarea name="pasted" rows="3" placeholder="Optional: paste the job description (needed only if the laptop can't open the page)"></textarea>
@@ -142,7 +136,8 @@ HOME = "<!doctype html><title>Job applier</title>" + CSS + """
  {% if q.kind != 'textarea' %}<label><input type="checkbox" name="remember" checked> Remember for next time</label><br>{% endif %}
  <button class="ok">Save</button> <button name="skip" value="1" formnovalidate>Leave blank</button></form>{% endfor %}
 {% for i in items %}<details><summary>{{ i.title or i.url[:60] }}{% if i.company %} - {{ i.company }}{% endif %}
- <span class="meta">| {{ label.get(i.status, i.status) }}{% if i.score %} | fit {{ i.score }}{% endif %}{% if i.salary_lpa %} | {{ '%.1f' % i.salary_lpa }} LPA{% endif %}{% if i.action %} | {{ i.action }} pending - laptop will do it{% endif %}</span></summary>
+ <span class="chip st-{{ i.status }}">{{ label.get(i.status, i.status) }}</span>
+ <span class="meta">{% if i.score %}fit {{ i.score }}{% endif %}{% if i.salary_lpa %} | {{ '%.1f' % i.salary_lpa }} LPA{% endif %}{% if i.action %} | {{ i.action }} pending - laptop will do it{% endif %}</span></summary>
  <p><a href="{{ i.url }}" target="_blank" rel="noopener">Open job posting</a></p>
  {% for w in i.warnings or [] %}<div class="warn">{{ w }}</div>{% endfor %}
  {% if i.notes %}<pre>{{ i.notes }}</pre>{% endif %}
@@ -151,7 +146,21 @@ HOME = "<!doctype html><title>Job applier</title>" + CSS + """
  {% for a, text, cls in buttons(i) %}<form class="inline" method="post" action="/act/{{ i.id }}/{{ a }}" style="display:inline">
  <button class="{{ cls }}">{{ text }}</button></form>{% endfor %}
 </details>{% else %}<p class="meta">Nothing yet. Paste a link above.</p>{% endfor %}
-<script>setTimeout(()=>{ if(!document.querySelector('details[open]') && !document.activeElement.closest('form')) location.reload() }, 20000)</script>"""
+</main>
+<script>
+setInterval(async () => {
+  const m = document.getElementById('main'), a = document.activeElement;
+  if (m.querySelector('details[open]') || (a && a.closest && a.closest('form'))) return;
+  try {
+    const r = await fetch('/', {headers: {'X-Partial': '1'}});
+    if (r.redirected) { location.href = '/login'; return; }
+    const d = new DOMParser().parseFromString(await r.text(), 'text/html'), n = d.getElementById('main'), led = d.querySelector('nav .led');
+    if (n && n.innerHTML !== m._last) { m._last = n.innerHTML; m.innerHTML = n.innerHTML; }
+    const cur = document.querySelector('nav .led');
+    if (led && cur) { cur.className = led.className; cur.textContent = led.textContent; }
+  } catch (e) {}
+}, 15000);
+</script>"""
 
 
 def _buttons(i):
@@ -177,9 +186,11 @@ def guard():
     if request.path.startswith("/api/agent/"):
         ok = AGENT_TOKEN and hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + AGENT_TOKEN)
         return None if ok else (jsonify(error="unauthorized"), 401)
+    if ON_VERCEL and isinstance(store, MemStore):
+        return "Storage not connected: add the Upstash Redis integration to this Vercel project, then redeploy.", 500
     if not app.secret_key or not PW_HASH:
         return "Server not configured: set SECRET_KEY, APP_EMAIL, APP_PASSWORD_HASH, AGENT_TOKEN.", 500
-    if request.endpoint != "login" and not session.get("user"):
+    if request.endpoint not in ("login", "static") and not session.get("user"):
         return redirect("/login")
     return None
 

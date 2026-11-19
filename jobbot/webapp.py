@@ -48,23 +48,11 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
 TASKS = []  # in-memory progress of pasted links
 _fails = {}  # ip -> recent failed login times
 
-CSS = """<meta name="viewport" content="width=device-width, initial-scale=1"><style>
-body{font:15px system-ui;max-width:900px;margin:24px auto;padding:0 16px;background:#fafafa;color:#222}
-details,.box{background:#fff;border:1px solid #ddd;border-radius:8px;margin:10px 0;padding:10px 14px}
-summary{cursor:pointer;font-weight:600}.meta{color:#666;font-weight:400}
-.warn{background:#fff0f0;border:1px solid #e99;padding:6px 10px;border-radius:6px;margin:8px 0}
-.ask{background:#fffbe6;border-color:#e6c200}.note{white-space:pre-wrap;color:#555}
-input[type=text],input[type=url],textarea,select{width:100%;padding:6px;box-sizing:border-box;margin:4px 0}
-button,a.btn{padding:6px 14px;border-radius:6px;border:1px solid #999;background:#eee;cursor:pointer;
-text-decoration:none;color:#000;font-size:14px;display:inline-block}
-.ok{background:#d9f2d9}.no{background:#f5d9d9}pre{white-space:pre-wrap;background:#f4f4f4;padding:8px;border-radius:6px}
-nav a{margin-right:14px} nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-button,a.btn{min-height:40px} pre{overflow-x:auto} body{overflow-wrap:anywhere}
-@media (max-width:600px){body{margin:12px auto;font-size:16px} input,textarea,select{font-size:16px}
- form[style*="inline"]{display:block!important} button{width:100%;margin:4px 0}}
-</style>"""
+ASSETS_V = "3"  # bump to bust phone/browser caches after editing static/glass.*
+CSS = f"""<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/glass.css?v={ASSETS_V}"><script src="/static/glass.js?v={ASSETS_V}" defer></script>"""
 
-NAV = """<nav><a href="/">Apply</a><a href="/memory">Remembered answers</a>
+NAV = """<nav><b>Job applier</b><a href="/">Apply</a><a href="/memory">Remembered answers</a>
 <form method="post" action="/logout" style="margin-left:auto"><button>Log out</button></form></nav>"""
 
 LOGIN = """<!doctype html><title>Log in</title>""" + CSS + """
@@ -78,7 +66,7 @@ LOGIN = """<!doctype html><title>Log in</title>""" + CSS + """
  <button class="ok">Log in</button></form>"""
 
 PANEL = """
-{% for t in tasks %}<div class="box">{{ '⏳' if t.state=='working' else ('✓' if t.state=='done' else '⚠') }}
+{% for t in tasks %}<div class="box"><span class="chip st-{{ t.state }}">{{ {'working':'working','done':'done','error':'problem'}[t.state] }}</span>
  <b>{{ t.url[:70] }}</b> <span class="meta">{{ t.msg }}</span></div>{% endfor %}
 {% for q in questions %}<form class="box ask" method="post" action="/answer/{{ q.id }}">
  <b>{{ q.label }}</b> <span class="meta">({{ q.title }} - {{ q.company }})</span>
@@ -88,8 +76,8 @@ PANEL = """
  {% else %}<input type="text" name="answer" autofocus>{% endif %}
  {% if q.kind != 'textarea' %}<label><input type="checkbox" name="remember" checked> Remember for next time</label><br>{% endif %}
  <button class="ok">Save &amp; continue</button> <button name="skip" value="1" formnovalidate>Leave blank</button></form>{% endfor %}
-{% for j in active %}<div class="box"><b>{{ j.title }} - {{ j.company }}</b>
- <span class="meta">{{ {'approved':'waiting for the browser','filling':'filling the form...','awaiting_input':'waiting for your answer above','filled':'FORM FILLED - review the browser window'}[j.status] }}</span>
+{% for j in active %}<div class="box"><span class="chip st-{{ j.status }}">{{ {'approved':'waiting for the browser','filling':'filling the form','awaiting_input':'needs your answer','filled':'form filled - review the browser window'}[j.status] }}</span>
+ <b>{{ j.title }} - {{ j.company }}</b>
  {% if j.notes %}<div class="note">{{ j.notes }}</div>{% endif %}
  {% if j.status == 'filled' %}<form method="post" action="/act/{{ j.id }}/submitted" style="display:inline"><button class="ok">I submitted it</button></form>
  <form method="post" action="/act/{{ j.id }}/needs_manual" style="display:inline"><button>Didn't go through</button></form>
@@ -120,7 +108,10 @@ PROJECT {{ p.name }}
 </details>{% else %}<p class="meta">Nothing waiting for approval.</p>{% endfor %}"""
 
 INDEX = """<!doctype html><title>Job applier</title>""" + CSS + NAV + """
-<div id="usage" class="box meta">{{ usage }}</div>
+<div class="dash">
+ <div class="gauge" data-value="{{ per_app }}" data-max="50000" data-label="TOKENS / APPLICATION"></div>
+ <div id="usage" class="box meta">{{ usage }}</div>
+</div>
 <h2>Paste a job link</h2>
 <form class="box" method="post" action="/add">
  <input type="url" name="url" placeholder="https://jobs.lever.co/... / boards.greenhouse.io/... / company careers page" required>
@@ -135,7 +126,7 @@ INDEX = """<!doctype html><title>Job applier</title>""" + CSS + NAV + """
 <script>
 async function poll(id, url, skip){ const el=document.getElementById(id);
  if(skip(el)) return; try{ const r=await fetch(url); if(r.status===401){location.href='/login';return;}
- el.innerHTML=await r.text(); }catch(e){} }
+ const t=await r.text(); if(t!==el._last){ el._last=t; el.innerHTML=t; } }catch(e){} }
 setInterval(()=>poll('panel','/panel',el=>el.contains(document.activeElement)&&document.activeElement.tagName!=='BODY'),3000);
 setInterval(()=>poll('usage','/usage',()=>false),5000);
 setInterval(()=>poll('queue','/queue',el=>el.querySelector('details[open]')),5000);
@@ -171,7 +162,7 @@ def _queue():
 
 @app.before_request
 def require_login():
-    if request.endpoint == "login" or session.get("user"):
+    if request.endpoint in ("login", "static") or session.get("user"):
         return None
     if request.path in ("/panel", "/queue", "/usage"):
         return "", 401
@@ -209,7 +200,9 @@ def logout():
 
 @app.get("/")
 def index():
-    return render_template_string(INDEX, panel=_panel(), queue=_queue(), usage=usage.text())
+    s = usage.summary()
+    per_app = s["per_app"] or usage.ESTIMATE_PER_APP
+    return render_template_string(INDEX, panel=_panel(), queue=_queue(), usage=usage.text(), per_app=round(per_app))
 
 
 @app.get("/usage")
