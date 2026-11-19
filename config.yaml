@@ -3,7 +3,7 @@ server:
   port: 5000
 
 cloud:                     # the Vercel inbox (cloud/). Token lives in profile/cloud_token (git-ignored)
-  url: ""                  # e.g. https://jobbot-xyz.vercel.app  ("" = off)
+  url: "https://jobbot-inbox.vercel.app"   # "" = off
   poll_seconds: 30
   auto_approve_pasted: false  # true = links you paste on the phone go straight to applying after tailoring
 

@@ -186,6 +186,8 @@ def guard():
     if request.path.startswith("/api/agent/"):
         ok = AGENT_TOKEN and hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + AGENT_TOKEN)
         return None if ok else (jsonify(error="unauthorized"), 401)
+    if request.endpoint == "static":
+        return None
     if ON_VERCEL and isinstance(store, MemStore):
         return "Storage not connected: add the Upstash Redis integration to this Vercel project, then redeploy.", 500
     if not app.secret_key or not PW_HASH:
