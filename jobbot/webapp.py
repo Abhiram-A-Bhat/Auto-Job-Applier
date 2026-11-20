@@ -13,6 +13,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from . import db, fetchjob, formfill, memory, usage
 from .config import ROOT, cfg, load_master
+from . import pipeline
 from .pipeline import process_link, run_fetch
 
 AUTH = ROOT / "profile" / "auth.json"     # {email, hash} - never the plain password; git-ignored
@@ -66,7 +67,9 @@ LOGIN = """<!doctype html><title>Log in</title>""" + CSS + """
  <button class="ok">Log in</button></form>"""
 
 PANEL = """
-{% for t in tasks %}<div class="box"><span class="chip st-{{ t.state }}">{{ {'working':'working','done':'done','error':'problem'}[t.state] }}</span>
+{% if searching %}<form class="box" method="post" action="/stop"><button class="no">Stop search</button>
+ <span class="meta">stops the job search and any login wait; jobs already queued stay queued</span></form>{% endif %}
+{% for t in tasks %}<div class="box"><span class="chip st-{{ t.state }}">{{ {'working':'working','done':'done','error':'problem','stopped':'stopped'}[t.state] }}</span>
  <b>{{ t.url[:70] }}</b> <span class="meta">{{ t.msg }}</span>
  {% if t.state == 'error' %}<form method="post" action="/retry/{{ first + loop.index0 }}" style="display:inline"><button>Retry</button></form>{% endif %}</div>{% endfor %}
 {% for q in questions %}<form class="box ask" method="post" action="/answer/{{ q.id }}">
@@ -150,7 +153,8 @@ def _panel():
     for q in qs:
         q["opts"] = json.loads(q["options"] or "[]")
     active = [j for s in ACTIVE for j in db.by_status(s)]
-    return render_template_string(PANEL, tasks=TASKS[-5:], first=max(0, len(TASKS) - 5), questions=qs, active=active)
+    return render_template_string(PANEL, tasks=TASKS[-5:], first=max(0, len(TASKS) - 5), questions=qs, active=active,
+                                  searching=pipeline.searching())
 
 
 def _queue():
@@ -251,8 +255,16 @@ def _search(task):
     try:
         run_fetch(lambda m: task.update(msg=m))
         task.update(state="done")
+    except pipeline.Stopped:
+        task.update(state="stopped", msg="Stopped by you.")
     except (Exception, SystemExit) as e:
         task.update(state="error", msg=str(e))
+
+
+@app.post("/stop")
+def stop():
+    pipeline.STOP.set()
+    return redirect("/")
 
 
 @app.post("/login-browser")

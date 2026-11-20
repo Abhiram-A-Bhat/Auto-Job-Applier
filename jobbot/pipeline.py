@@ -97,6 +97,8 @@ def _discover_platforms(say):
         known = db.known_urls(name)
         try:
             rows = formfill.run_in_browser(lambda b, n=name: platforms.discover(b, n, say, known))
+        except Stopped:
+            raise
         except Exception as e:
             say(f"  ! {name}: {str(e)[:120]}")
             continue
@@ -108,10 +110,33 @@ def _discover_platforms(say):
     return found
 
 
+class Stopped(Exception):
+    pass
+
+
+STOP = threading.Event()  # set by the Stop button; checked at every step and during every browser wait
+
+
+def check_stop():
+    if STOP.is_set():
+        raise Stopped("Stopped.")
+
+
+def searching():
+    return _busy.locked()
+
+
 def run_fetch(say=print):
     """Discover -> free local filter -> cheap LLM score of the best few -> tailor -> queue."""
     if not _busy.acquire(blocking=False):
         return say("A job search is already running.")
+    STOP.clear()
+    raw_say = say
+
+    def say(m):
+        check_stop()
+        raw_say(m)
+
     try:
         master, master_txt = load_master()
         s = cfg["search"]
@@ -134,6 +159,8 @@ def run_fetch(say=print):
             say(f"Scoring {n}: {job['title']} - {job['company']}")
             try:
                 r = ai.score(job, master_txt)
+            except Stopped:
+                raise
             except Exception as e:
                 say(f"  ! {e}")
                 continue
@@ -142,6 +169,7 @@ def run_fetch(say=print):
         run_tailor(master, master_txt, say)
         say("Search finished.")
     finally:
+        STOP.clear()  # a Stop only ends this search; it must not affect pasted links or the next search
         _busy.release()
 
 
@@ -161,6 +189,8 @@ def run_tailor(master=None, master_txt=None, say=print):
                 from . import formfill  # imported lazily: needs Playwright
                 db.update(job["id"], status="approved")
                 formfill.enqueue(job["id"])
+        except Stopped:
+            raise
         except Exception as e:
             db.update(job["id"], status="error", notes=str(e))
             say(f"  ! {e}")

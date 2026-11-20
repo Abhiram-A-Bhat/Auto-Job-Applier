@@ -93,28 +93,100 @@ def blocked(page):
 def wait(page, ms):
     """page.wait_for_timeout that still handles button clicks (e.g. 'Open jobbot browser') while it waits."""
     from . import formfill
+    from .pipeline import check_stop
     end = ms
     while end > 0:
-        page.wait_for_timeout(min(end, 1000))
+        check_stop()  # Stop button
+        try:
+            page.wait_for_timeout(min(end, 1000))
+        except Exception:
+            if page.is_closed():
+                return  # you closed the tab: the caller decides what that means
+            raise
         end -= 1000
         formfill.pump(page.context)
+
+
+def _typing_password(page):
+    try:
+        return page.locator("input[type=password]:visible").count() > 0
+    except Exception:
+        return False
+
+
+def _settled(page, checks=3):
+    """True once the page has stayed off login/verification screens for `checks` looks in a row (~3s apart).
+    Logins hop through several pages (password -> 'verify it's you' -> OTP -> redirect); a single clear look
+    mid-way is not the end, so we never move on (or reload) until it has really settled."""
+    for _ in range(checks):
+        if page.is_closed() or blocked(page) or _typing_password(page):
+            return False
+        wait(page, 3000)
+    return not (page.is_closed() or blocked(page) or _typing_password(page))
 
 
 def wait_until_clear(page, notify, minutes=15):
     if not blocked(page):
         return
     notify("A login or verification check is showing in the jobbot browser window. Complete it there yourself; "
-           "I'll continue automatically.")
+           "I'll wait and continue automatically (nothing reloads while you do it).")
     try:
         page.bring_to_front()
     except Exception:
         pass
     for _ in range(minutes * 20):
         wait(page, 3000)
-        if not blocked(page):
-            page.wait_for_timeout(2000)
+        if page.is_closed():
+            raise RuntimeError("Verification tab was closed - skipped")
+        if not blocked(page) and _settled(page):
             return
     raise RuntimeError("Timed out waiting for you to log in / pass the verification check")
+
+
+# Cookies these sites set only after a completed sign-in. Unknown/changed names just fall back to watching the page.
+AUTH_COOKIES = {"linkedin": ("li_at",), "naukri": ("nauk_at",), "indeed": ("PPID", "SHOE"), "wellfound": ()}
+
+
+def has_login(context, name):
+    try:
+        return any(c["name"] in AUTH_COOKIES.get(name, ()) and HOSTS[name] in c["domain"]
+                   for c in context.cookies())
+    except Exception:
+        return False
+
+
+def ensure_logged_in(browser, name, notify):
+    """Before searching a platform: if you're not signed in, open its login page and wait - without touching the
+    page - until you've finished (including OTP / 'verify it's you' steps). Close the tab to skip that platform."""
+    if has_login(browser, name):
+        return
+    minutes = (cfg.get("platforms") or {}).get("login_wait_minutes", 30)
+    page = browser.new_page()
+    page.goto(LOGIN[name], wait_until="domcontentloaded", timeout=45000)
+    wait(page, 3000)
+    if not AUTH_COOKIES.get(name) and not blocked(page) and not _typing_password(page):
+        page.close()  # login page bounced us away: already signed in
+        return
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
+    notify(f"{name}: please log in in the jobbot browser window (the {name} tab). I'll wait up to {minutes} min "
+           f"and continue on my own when you're done - close that tab to skip {name}.")
+    for _ in range(minutes * 20):
+        if page.is_closed():
+            raise RuntimeError(f"login tab closed - skipped {name}")
+        if has_login(browser, name) and not blocked(page) and not _typing_password(page):
+            wait(page, 3000)  # let the post-login redirect finish
+            break
+        if not AUTH_COOKIES.get(name) and _settled(page):
+            break
+        wait(page, 3000)
+    else:
+        raise RuntimeError(f"not logged in to {name} after {minutes} min - skipped this time")
+    notify(f"{name}: logged in, searching...")
+    if not page.is_closed():
+        page.close()
 
 
 # ---- reading ------------------------------------------------------------------------------------------------
@@ -161,6 +233,7 @@ def discover(browser, name, notify, known):
     """Collect up to max_jobs_per_platform NEW job pages from this platform's search results."""
     p = cfg["platforms"]
     limit, delay = p.get("max_jobs_per_platform", 15), p.get("delay_seconds", 6) * 1000
+    ensure_logged_in(browser, name, notify)
     page = browser.new_page()
     urls = []
     try:

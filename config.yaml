@@ -36,10 +36,11 @@ search:
 # Their terms forbid automation and accounts can get restricted - keep these numbers modest. [] turns it off.
 # Logins and "verify you are human" checks are never bypassed: it pauses until you clear them.
 platforms:
-  enabled: [linkedin, naukri, indeed, wellfound]
+  enabled: [linkedin, naukri, wellfound]   # indeed removed: its Cloudflare check rejects automated browsers even after you solve it
   queries: ["software engineer", "backend developer", "java developer"]   # each searched in Bengaluru + remote
   max_jobs_per_platform: 15   # new job pages read per platform per search
   delay_seconds: 6            # pause between page loads
+  login_wait_minutes: 30      # if you're not logged in to a platform, wait this long for you to log in, then skip it
   linkedin_easy_apply_only: true  # Easy Apply forms can be filled in-site; others jump to company sites
 
 sources:
