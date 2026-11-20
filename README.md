@@ -28,6 +28,14 @@ Setup: deploy `cloud/` to Vercel, add the Upstash Redis integration, set env var
 `config.yaml` -> `cloud.url`. `cloud.auto_approve_pasted: true` makes phone links apply without an approval click;
 `auto_click_submit: true` lets approved forms submit without you at the laptop.
 
+## Telegram bot - send links from your phone's chat
+Free, works with a normal Telegram account. Create a bot with @BotFather, then set Vercel env vars `TG_TOKEN`
+(BotFather's token), `TG_SECRET` (random; Telegram sends it back on every webhook call) and `TG_PAIR` (random
+link code), and register the webhook: `https://api.telegram.org/bot<TG_TOKEN>/setWebhook` with
+`url=<cloud url>/api/telegram/webhook` and `secret_token=<TG_SECRET>`. Open `t.me/<bot>?start=<TG_PAIR>` once to
+link your chat; everyone else is ignored. Commands: send a link, `/status`, `/approve <code>`, `/reject <code>`,
+`delete my data`. You get a message when a resume is ready, a form needs an answer, or a job is applied.
+
 ## Daily use
 1. Paste a job link in the app. Greenhouse / Lever / Ashby links and most company career pages work directly.
 2. It tailors your resume + cover letter (rules in `jobbot/ai.py`) and puts it in the approval queue.

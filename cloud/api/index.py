@@ -202,8 +202,8 @@ def _ip():
 
 @app.before_request
 def guard():
-    if request.path.startswith("/api/whatsapp/") or request.path in ("/privacy", "/data-deletion"):
-        return None  # webhook is authenticated by Meta's verify token / signature; policy pages are public
+    if request.path.startswith(("/api/whatsapp/", "/api/telegram/")) or request.path in ("/privacy", "/data-deletion"):
+        return None  # webhooks authenticate themselves (Meta signature / Telegram secret header); policy pages are public
     if request.path.startswith("/api/agent/"):
         ok = AGENT_TOKEN and hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + AGENT_TOKEN)
         return None if ok else (jsonify(error="unauthorized"), 401)
@@ -315,7 +315,7 @@ def agent_push():
         old = cur.get("status")
         cur.update({k: v for k, v in u.items() if k not in ("action", "id")})
         _put("item:", "items", cur, cur["created"])
-        if cur.get("wa_from") and cur.get("status") != old:
+        if (cur.get("wa_from") or cur.get("tg_chat")) and cur.get("status") != old:
             wa_notify(cur)
     for a in d.get("ack_actions", []):
         cur = _load("item:", a["id"])
@@ -327,11 +327,11 @@ def agent_push():
             _put("q:", "questions", {**q, "answer": None, "created": time.time()}, time.time())
     for qid in d.get("remove_questions", []) + d.get("ack_answers", []):
         _delete("q:", "questions", qid)
-    for q in d.get("questions", []):  # a form needs an answer: ping WhatsApp if the job came from there
+    for q in d.get("questions", []):  # a form needs an answer: ping the chat the job came from
         it = _load("item:", q.get("item_id", ""))
-        if it and it.get("wa_from"):
-            wa_send(it["wa_from"], f"❓ {it.get('title') or 'A job'} needs an answer: \"{q['label']}\"\n"
-                                   f"Answer it here: {request.host_url}")
+        if it:
+            bot_send(it, f"❓ {it.get('title') or 'A job'} needs an answer: \"{q['label']}\"\n"
+                         f"Answer it here: {request.host_url}")
     return jsonify(ok=True)
 
 
@@ -339,9 +339,9 @@ def agent_push():
 POLICY = "<!doctype html><title>{{ t }}</title>" + CSS + """<main id="main"><h2>{{ t }}</h2><div class="box">{{ body|safe }}</div></main>"""
 PRIVACY = """<p><b>Job applier</b> is a personal tool run by its single owner to queue job links and track their own
 job applications. It is not offered to the public.</p>
-<p><b>What it receives:</b> WhatsApp messages sent to the bot's number by the owner's own allow-listed phone number
+<p><b>What it receives:</b> WhatsApp or Telegram messages sent to the bot by the owner's own linked account
 (the text and links in those messages), and job links/answers entered on this site after logging in.
-Messages from any other number are ignored and not stored.</p>
+Messages from anyone else are ignored and not stored.</p>
 <p><b>What it stores:</b> the queued job links, their status, and short status notes, in a private database used only by
 this app. Each message ID is kept for 24 hours to avoid processing duplicates.</p>
 <p><b>Sharing:</b> nothing is sold or shared with third parties. Data is processed only by the hosting provider (Vercel),
@@ -406,14 +406,25 @@ def wa_notify(it):
         "error": f"⚠️ Couldn't process {name}: {(it.get('notes') or '')[:200]}",
     }.get(s)
     if msg:
-        wa_send(it["wa_from"], msg)
+        bot_send(it, msg)
 
 
-def _wa_handle(frm, text):
+def bot_send(it, text):
+    """Reply in whichever chat the job came from (WhatsApp or Telegram)."""
+    if it.get("wa_from"):
+        return wa_send(it["wa_from"], text)
+    if it.get("tg_chat"):
+        return tg_send(it["tg_chat"], text.replace("*", ""))
+    return False
+
+
+def _wa_handle(frm, text, key="wa_from", source="whatsapp"):
     low = text.strip().lower()
+    if low.startswith("/"):  # Telegram-style commands: /status, /approve abc12, /help
+        low = re.sub(r"^(\w+)@\w+", r"\1", low[1:])
     items = _all("items", "item:")
     if low == "delete my data":
-        mine = [i for i in items if i.get("wa_from") == frm]
+        mine = [i for i in items if i.get(key) == frm]
         for i in mine:
             _delete("item:", "items", i["id"])
         _bump()
@@ -443,7 +454,7 @@ def _wa_handle(frm, text):
     for u in urls[:5]:
         now = time.time()
         _put("item:", "items", {"id": uuid.uuid4().hex[:12], "url": u, "pasted": text if len(text) > 200 else "",
-                                "created": now, "status": "waiting", "source": "whatsapp", "wa_from": frm}, now)
+                                "created": now, "status": "waiting", "source": source, key: frm}, now)
     _bump()
     waiting = sum(1 for i in items if i.get("status") == "waiting") + len(urls[:5])
     online = time.time() - float(store.cmd("GET", "agent:seen") or 0) < 120
@@ -481,4 +492,48 @@ def wa_hook():
                 store.cmd("SET", "wa:last:" + frm, time.time())
                 text = (m.get("text") or {}).get("body", "") if m.get("type") == "text" else ""
                 wa_send(frm, _wa_handle(frm, text))
+    return "ok", 200
+
+
+# ---- Telegram bot (free, works with a normal personal Telegram account) -----------------------------------------
+TG_TOKEN = os.environ.get("TG_TOKEN", "")
+TG_SECRET = os.environ.get("TG_SECRET", "")  # Telegram echoes it in a header on every webhook call
+TG_PAIR = os.environ.get("TG_PAIR", "")  # one-time link code: t.me/<bot>?start=<TG_PAIR> makes that chat the owner
+
+
+def tg_owners():
+    env = {c.strip() for c in os.environ.get("TG_ALLOWED", "").split(",") if c.strip()}
+    return env | ({str(store.cmd("GET", "tg:owner"))} if store.cmd("GET", "tg:owner") else set())
+
+
+def tg_send(chat, text):
+    if not TG_TOKEN:
+        return False
+    try:
+        httpx.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", timeout=10,
+                   json={"chat_id": chat, "text": text[:4000], "disable_web_page_preview": True})
+        return True
+    except Exception:
+        return False
+
+
+@app.post("/api/telegram/webhook")
+def tg_hook():
+    if not (TG_TOKEN and TG_SECRET) or not hmac.compare_digest(
+            request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), TG_SECRET):
+        return "forbidden", 403
+    u = request.get_json(force=True, silent=True) or {}
+    m = u.get("message") or {}
+    chat = str((m.get("chat") or {}).get("id", ""))
+    text = m.get("text") or m.get("caption") or ""
+    if not chat or store.cmd("SET", f"tg:upd:{u.get('update_id')}", 1, "NX", "EX", 86400) is None:
+        return "ok", 200  # Telegram retries deliveries; handle each update once
+    owners = tg_owners()
+    print("tg message from chat ..." + chat[-4:], "owner" if chat in owners else "not owner")
+    if chat not in owners:
+        if TG_PAIR and not owners and text.strip() == f"/start {TG_PAIR}":
+            store.cmd("SET", "tg:owner", chat)
+            tg_send(chat, "\U0001F517 Linked! This chat now controls your job queue.\n\n" + HELP)
+        return "ok", 200  # not you: ignore silently
+    tg_send(chat, _wa_handle(chat, text, key="tg_chat", source="telegram"))
     return "ok", 200
