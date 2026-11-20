@@ -90,13 +90,27 @@ def blocked(page):
         return False
 
 
+def wait(page, ms):
+    """page.wait_for_timeout that still handles button clicks (e.g. 'Open jobbot browser') while it waits."""
+    from . import formfill
+    end = ms
+    while end > 0:
+        page.wait_for_timeout(min(end, 1000))
+        end -= 1000
+        formfill.pump(page.context)
+
+
 def wait_until_clear(page, notify, minutes=15):
     if not blocked(page):
         return
     notify("A login or verification check is showing in the jobbot browser window. Complete it there yourself; "
            "I'll continue automatically.")
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
     for _ in range(minutes * 20):
-        page.wait_for_timeout(3000)
+        wait(page, 3000)
         if not blocked(page):
             page.wait_for_timeout(2000)
             return
@@ -155,7 +169,7 @@ def discover(browser, name, notify, known):
             page.goto(su, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(4000)
             if blocked(page):
-                wait_until_clear(page, notify)
+                wait_until_clear(page, notify, minutes=5)  # unattended search: don't hold the browser for long
                 page.goto(su, wait_until="domcontentloaded", timeout=45000)
                 page.wait_for_timeout(4000)
             for _ in range(4):
@@ -167,7 +181,7 @@ def discover(browser, name, notify, known):
                     urls.append(c)
             if len(urls) >= limit:
                 break
-            page.wait_for_timeout(delay)
+            wait(page, delay)
         out = []
         for n, u in enumerate(urls[:limit], 1):
             notify(f"{name}: reading job {n}/{min(limit, len(urls))}")
@@ -175,7 +189,7 @@ def discover(browser, name, notify, known):
                 out.append(read_page(page, u, notify))
             except Exception as e:
                 notify(f"{name}: skipped a job ({str(e)[:60]})")
-            page.wait_for_timeout(delay)
+            wait(page, delay)
         return out
     finally:
         page.close()

@@ -259,12 +259,28 @@ def _search(task):
 def login_browser():
     from . import platforms
 
+    task = {"url": "jobbot browser", "state": "working", "msg": "opening login tabs on this laptop..."}
+    TASKS.append(task)
+
     def open_tabs(b):
+        first = None
         for n in platforms.PLATFORMS:
             if n in platforms.enabled():
-                b.new_page().goto(platforms.LOGIN[n], wait_until="domcontentloaded")
+                pg = b.new_page()
+                first = first or pg
+                try:
+                    pg.goto(platforms.LOGIN[n], wait_until="domcontentloaded", timeout=30000)
+                except Exception:
+                    pass  # slow site: the tab is open anyway
+        if first:
+            first.bring_to_front()
 
-    threading.Thread(target=lambda: formfill.run_in_browser(open_tabs), daemon=True).start()
+    def done(fut):
+        e = fut.exception()
+        task.update(state="error", msg=str(e)[:200]) if e else task.update(
+            state="done", msg="opened on this laptop's screen - log in to each tab once; logins are remembered")
+
+    formfill.run_now(open_tabs).add_done_callback(done)
     return redirect("/")
 
 

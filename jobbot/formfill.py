@@ -279,6 +279,32 @@ def run_in_browser(fn, timeout=7200):
     return fut.result(timeout)
 
 
+_urgent = queue.Queue()
+
+
+def run_now(fn):
+    """Like run_in_browser, but jumps the line: long browser work (job search waiting on a login page, slow pages)
+    calls pump() while it waits, so a button click is handled within seconds. Returns a Future."""
+    _start()
+    fut = Future()
+    _urgent.put((fn, fut))
+    _jobs.put(("pump", None, None))  # wakes the worker if it is idle
+    return fut
+
+
+def pump(b):
+    """Run any urgent calls now. Only call this from the browser worker thread (Playwright is single-threaded)."""
+    while True:
+        try:
+            fn, fut = _urgent.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            fut.set_result(fn(b))
+        except Exception as e:
+            fut.set_exception(e)
+
+
 def _worker():
     master, master_txt = load_master()
     with sync_playwright() as p:
@@ -294,6 +320,10 @@ def _worker():
 
         while True:
             kind, arg, fut = _jobs.get()
+            if not _urgent.empty():
+                pump(browser())
+            if kind == "pump":
+                continue
             if kind == "call":
                 try:
                     fut.set_result(arg(browser()))
