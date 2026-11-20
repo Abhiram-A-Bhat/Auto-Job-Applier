@@ -1,6 +1,7 @@
 import json
 import re
 import threading
+import time
 
 import httpx
 
@@ -25,10 +26,27 @@ def tailor_job(job, master, master_txt):
               warnings=json.dumps(warns))
 
 
+OFFLINE = re.compile(r"getaddrinfo|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|"
+                     r"Name or service not known|Temporary failure in name resolution", re.I)
+
+
+def _retry_offline(fn, say, waits=(10, 20, 30, 60, 60, 120, 120, 180, 300)):
+    """Internet/DNS blips shouldn't fail a link: wait for the connection to come back (up to ~15 min)."""
+    for w in waits:
+        try:
+            return fn()
+        except Exception as e:
+            if not (isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout)) or OFFLINE.search(str(e))):
+                raise
+            say(f"No internet connection - retrying in {w}s...")
+            time.sleep(w)
+    return fn()
+
+
 def process_link(url, pasted="", say=print):
     """Pasted link (local app or cloud inbox) -> job read -> tailored -> queued. Returns (job_id, message)."""
     master, txt = load_master()
-    job = fetchjob.resolve(url, pasted, say=say)
+    job = _retry_offline(lambda: fetchjob.resolve(url, pasted, say=say), say)
     db.insert_job({**job, "status": "processing"})
     cur = db.get(job["id"])
     if cur["status"] not in ("processing", "new", "scored", "skipped", "error", "rejected"):

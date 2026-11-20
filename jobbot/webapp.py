@@ -67,7 +67,8 @@ LOGIN = """<!doctype html><title>Log in</title>""" + CSS + """
 
 PANEL = """
 {% for t in tasks %}<div class="box"><span class="chip st-{{ t.state }}">{{ {'working':'working','done':'done','error':'problem'}[t.state] }}</span>
- <b>{{ t.url[:70] }}</b> <span class="meta">{{ t.msg }}</span></div>{% endfor %}
+ <b>{{ t.url[:70] }}</b> <span class="meta">{{ t.msg }}</span>
+ {% if t.state == 'error' %}<form method="post" action="/retry/{{ first + loop.index0 }}" style="display:inline"><button>Retry</button></form>{% endif %}</div>{% endfor %}
 {% for q in questions %}<form class="box ask" method="post" action="/answer/{{ q.id }}">
  <b>{{ q.label }}</b> <span class="meta">({{ q.title }} - {{ q.company }})</span>
  {% if q.opts %}<select name="answer">{% for o in q.opts %}<option>{{ o }}</option>{% endfor %}</select>
@@ -149,7 +150,7 @@ def _panel():
     for q in qs:
         q["opts"] = json.loads(q["options"] or "[]")
     active = [j for s in ACTIVE for j in db.by_status(s)]
-    return render_template_string(PANEL, tasks=TASKS[-5:], questions=qs, active=active)
+    return render_template_string(PANEL, tasks=TASKS[-5:], first=max(0, len(TASKS) - 5), questions=qs, active=active)
 
 
 def _queue():
@@ -230,9 +231,19 @@ def _process(task, url, pasted):
 
 @app.post("/add")
 def add():
-    task = {"url": request.form["url"].strip(), "state": "working", "msg": "reading the job and tailoring your resume..."}
+    task = {"url": request.form["url"].strip(), "state": "working", "msg": "reading the job and tailoring your resume...",
+            "pasted": request.form.get("pasted", "")}
     TASKS.append(task)
     threading.Thread(target=_process, args=(task, task["url"], request.form.get("pasted", "")), daemon=True).start()
+    return redirect("/")
+
+
+@app.post("/retry/<int:i>")
+def retry(i):
+    if 0 <= i < len(TASKS) and TASKS[i]["state"] == "error":
+        task = TASKS[i]
+        task.update(state="working", msg="retrying...")
+        threading.Thread(target=_process, args=(task, task["url"], task.get("pasted", "")), daemon=True).start()
     return redirect("/")
 
 
