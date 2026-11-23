@@ -142,7 +142,7 @@ HOME = "<!doctype html><title>Resume tailor</title>" + CSS + """
 <div id="list">
 {% for i in items %}<div class="box"><span class="chip st-{{ i.status }}">{{ label[i.status] }}</span>
  <b>{% if i.role %}{{ i.role }} - {{ i.company }}{% else %}{{ i.url[:70] }}{% endif %}</b>
- {% if i.status == 'done' %}{% if i.note %}<div class="warn">{{ i.note }}</div>{% endif %}
+ {% if i.status == 'done' %}{% if i.note %}<div{% if not i.note.endswith('/100.') %} class="warn"{% endif %}>{{ i.note }}</div>{% endif %}
  <p><a href="/file/{{ i.id }}/pdf" target="_blank" rel="noopener">Open PDF</a> | <a href="/file/{{ i.id }}/pdf?dl=1">Download PDF</a> |
  <a href="/file/{{ i.id }}/tex">Download LaTeX</a> | <a href="{{ i.url }}" target="_blank" rel="noopener">Job posting</a></p>
  {% elif i.status == 'error' %}<div class="warn">{{ i.error }}</div>

@@ -10,7 +10,7 @@ from .config import ROOT
 
 ALLOWED = {"section", "job", "project", "textbf", "textit", "begin", "end", "item"}
 PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
-\usepackage[margin=0.55in]{geometry}
+\usepackage[margin=0.6in]{geometry}
 \usepackage{fontspec}
 \setmainfont{texgyreheros}[Extension=.otf, UprightFont=*-regular, BoldFont=*-bold, ItalicFont=*-italic,
   BoldItalicFont=*-bolditalic, Ligatures={TeX,NoCommon}]
@@ -18,13 +18,15 @@ PREAMBLE = r"""\documentclass[10pt,a4paper]{article}
 \usepackage{titlesec}
 \usepackage[hidelinks]{hyperref}
 \pagestyle{empty}
+\renewcommand{\normalsize}{\fontsize{10.5}{12.6}\selectfont}
+\normalsize
 \setlength{\parindent}{0pt}
 \hyphenpenalty=10000 \exhyphenpenalty=10000 \emergencystretch=2em
-\setlist[itemize]{leftmargin=1.2em,itemsep=0.5pt,topsep=1pt,parsep=0pt}
+\setlist[itemize]{leftmargin=1.2em,itemsep=1pt,topsep=1.5pt,parsep=0pt}
 \titleformat{\section}{\bfseries\large}{}{0pt}{\MakeUppercase}[\vspace{-3pt}\titlerule]
-\titlespacing*{\section}{0pt}{6pt}{3pt}
-\newcommand{\job}[3]{\par\vspace{2pt}\textbf{#1}\hfill #2\par #3\par}
-\newcommand{\project}[1]{\par\vspace{2pt}\textbf{#1}\par}
+\titlespacing*{\section}{0pt}{7pt}{3pt}
+\newcommand{\job}[4]{\par\vspace{3pt}\textbf{#1}\hfill #4\par\textit{#2\if\relax\detokenize{#3}\relax\else, #3\fi}\par}
+\newcommand{\project}[1]{\par\vspace{3pt}\textbf{#1}\par}
 """
 
 
@@ -42,9 +44,11 @@ def _escape(text):
 
 def document(body, contact):
     items = [contact.get(k) for k in ("email", "phone", "location", "linkedin", "github", "website")]
-    line = " $|$ ".join(_escape(x) for x in items if x)
-    return (PREAMBLE + "\\begin{document}\n\\begin{center}{\\LARGE\\bfseries " + _escape(contact["name"]) +
-            "}\\\\[2pt]\n" + line + "\n\\end{center}\n\\vspace{-6pt}\n" + body + "\n\\end{document}\n")
+    line = " \\textbar{} ".join(_escape(x) for x in items if x)
+    name = _escape(contact["name"])
+    return (PREAMBLE + "\\hypersetup{pdftitle={" + name + " Resume},pdfauthor={" + name + "}}\n" +
+            "\\begin{document}\n\\begin{center}{\\LARGE\\bfseries " + name +
+            "}\\\\[2pt]\n{\\small " + line + "}\n\\end{center}\n\\vspace{-6pt}\n" + body + "\n\\end{document}\n")
 
 
 def unsafe(body):
@@ -56,6 +60,8 @@ def unsafe(body):
     envs = set(re.findall(r"\\(?:begin|end)\{([^}]*)\}", text)) - {"itemize"}
     if bad or envs:
         return "Use only the allowed commands. Remove: " + ", ".join(bad + sorted(envs))
+    if len(re.findall(r"\\job\b", body)) != len(re.findall(r"\\job(?:\{[^{}]*\}){4}", body)):
+        return "Every role must be written as \\job{Title}{Company}{Location}{Dates}."
     return None
 
 

@@ -1,7 +1,7 @@
 """Link -> job description -> Claude writes LaTeX -> compiled PDF."""
 import re
 
-from . import ai, fetchjob, latex
+from . import ai, ats, fetchjob, latex
 from .config import ROOT, load_master
 
 OUTPUT = ROOT / "output"
@@ -16,8 +16,9 @@ def make(url, pasted=""):
     """Returns {company, role, pdf, tex, note}: file names inside output/."""
     master, master_txt = load_master()
     job = fetchjob.read(url, pasted)
+    keywords = ai.job_keywords(job)
     draft = ai.write_resume(job, master_txt)
-    pdf, tex, note = None, None, ""
+    pdf, tex, note, best = None, None, "", None
     for attempt in range(ATTEMPTS):
         problem = latex.unsafe(draft["body"])
         extra = latex.invented_numbers(draft["body"], master_txt)
@@ -30,15 +31,25 @@ def make(url, pasted=""):
                 elif extra:
                     problem = "Remove these numbers, which are not in the master resume: " + ", ".join(extra)
                 else:
-                    break
+                    report = ats.score(draft["body"], pages, master["contact"], keywords, draft["role"], master_txt)
+                    rank = (not report["unproven"], report["score"])
+                    if best is None or rank > best[0]:  # a repair can make it worse, so keep the strongest version
+                        best = (rank, draft, pdf, tex, report)
+                    problem = ats.problem(report, draft["role"])
+                    if not problem:
+                        break
             except ValueError as e:
                 pdf, problem = None, str(e)
         if attempt == ATTEMPTS - 1:
-            if pdf is None:
+            if best is None and pdf is None:
                 raise RuntimeError(problem)
-            note = "Please check this before sending: " + problem
+            if best is None:
+                note = "Please check this before sending: " + problem
             break
         draft = ai.fix_resume(job, master_txt, draft, problem)
+    if best:
+        _, draft, pdf, tex, report = best
+        note = ats.note(report)
     OUTPUT.mkdir(exist_ok=True)
     base = _name(master["contact"]["name"], draft["company"], draft["role"])
     (OUTPUT / f"{base}.pdf").write_bytes(pdf)

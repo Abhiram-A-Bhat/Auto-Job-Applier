@@ -18,7 +18,7 @@ PAGE = f"""<!doctype html><title>Resume tailor</title><meta name="viewport" cont
  <button class="ok">Make PDF</button></form>
 {% if error %}<div class="warn">{{ error }}</div>{% endif %}
 {% if r %}<div class="box"><b>{{ r.role }} - {{ r.company }}</b>
- {% if r.note %}<div class="warn">{{ r.note }}</div>{% endif %}
+ {% if r.note %}<div{% if not r.note.endswith('/100.') %} class="warn"{% endif %}>{{ r.note }}</div>{% endif %}
  <p><a href="/file/{{ r.pdf }}" target="_blank">Open PDF</a> | <a href="/file/{{ r.pdf }}" download>Download PDF</a> |
  <a href="/file/{{ r.tex }}" download>Download LaTeX</a></p></div>{% endif %}"""
 
