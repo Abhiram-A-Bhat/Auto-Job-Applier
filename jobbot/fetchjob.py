@@ -1,24 +1,18 @@
-"""Turn a pasted job link into a job dict. ATS links use public APIs; other pages are read as text.
-LinkedIn / Indeed / Wellfound etc. are never fetched or automated: you paste the description yourself."""
-import hashlib
+"""Reads the job description from a link. Login walls and bot checks are never bypassed: paste the text instead."""
 import html
 import re
 from urllib.parse import urlparse
 
 import httpx
 
-from . import ai, sources
+NEED_PASTE = ("I couldn't read the job description from that link (it may need a login). "
+              "Paste the description into the box and try again.")
 
-MANUAL_HOSTS = ("linkedin.com", "indeed.com", "wellfound.com", "angel.co", "talboss")
 
-
-def is_manual(url):
-    from . import platforms
-    p = platforms.platform_of(url)
-    if p and p in platforms.enabled():
-        return False
-    host = urlparse(url).netloc.lower()
-    return any(h in host for h in MANUAL_HOSTS)
+def _clean(raw):
+    t = re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", html.unescape(raw or ""))
+    t = re.sub(r"<[^>]+>", " ", t)
+    return re.sub(r"\s+", " ", html.unescape(t)).strip()
 
 
 def _get(url):
@@ -27,74 +21,51 @@ def _get(url):
     return r
 
 
-def _page_text(url):
-    t = _get(url).text
-    t = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", t)
-    t = re.sub(r"<[^>]+>", " ", t)
-    return re.sub(r"\s+", " ", html.unescape(t)).strip()
+def _from_ats(host, parts):
+    """Greenhouse and Lever publish clean job data."""
+    if "greenhouse.io" in host and len(parts) >= 3 and parts[1] == "jobs":
+        j = _get(f"https://boards-api.greenhouse.io/v1/boards/{parts[0]}/jobs/{parts[2]}").json()
+        return f"{j['title']} at {parts[0]}. Location: {(j.get('location') or {}).get('name', '')}. {_clean(j.get('content'))}"
+    if host == "jobs.lever.co" and len(parts) >= 2:
+        j = _get(f"https://api.lever.co/v0/postings/{parts[0]}/{parts[1]}").json()
+        lists = " ".join(f"{x.get('text', '')}: {_clean(x.get('content'))}" for x in j.get("lists", []))
+        return f"{j['text']} at {parts[0]}. {j.get('descriptionPlain', '')} {lists}"
+    return ""
 
 
-def _gh(token, jid, url):
-    j = _get(f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{jid}").json()
-    return dict(id=f"greenhouse:{token}:{jid}", source="greenhouse", company=token.title(), title=j["title"],
-                location=(j.get("location") or {}).get("name", ""), url=url, apply_url=url,
-                description=sources._clean(j.get("content")))
+def _rendered(url):
+    """For pages that only show the job after JavaScript runs. A clean browser with no saved logins."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        b = p.chromium.launch(headless=True)
+        try:
+            page = b.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(3500)
+            return re.sub(r"\s+", " ", page.inner_text("body")).strip()
+        finally:
+            b.close()
 
 
-def _lever(slug, jid, url):
-    j = _get(f"https://api.lever.co/v0/postings/{slug}/{jid}").json()
-    return dict(id=f"lever:{slug}:{jid}", source="lever", company=slug.title(), title=j["text"],
-                location=(j.get("categories") or {}).get("location", ""), url=url,
-                apply_url=j.get("applyUrl") or url, description=j.get("descriptionPlain", ""))
-
-
-def _ashby(name, jid, url):
-    for j in sources.ashby(name):
-        if j["id"].endswith(jid):
-            return {**j, "company": name.title(), "url": url}
-    raise ValueError("job not found on Ashby board")
-
-
-def resolve(url, pasted="", say=print):
-    from . import platforms
-    url = url.strip()
+def read(url, pasted=""):
     pasted = (pasted or "").strip()
-    u = urlparse(url)
-    host, parts = u.netloc.lower(), [p for p in u.path.split("/") if p]
-    uid = hashlib.md5(url.split("?")[0].encode()).hexdigest()[:12]
-    plat = platforms.platform_of(url)
-    if plat and plat in platforms.enabled():  # read it in your logged-in browser (or use the pasted text)
-        canon = platforms.canonical(plat, url) or url
-        if len(pasted) >= 200:
-            info = ai.extract_job(pasted)
-            return dict(id=platforms.job_id(plat, canon), source=plat, company=info.get("company") or "Unknown",
-                        title=info.get("title") or "Role", location=info.get("location", ""), url=canon,
-                        apply_url=canon, description=info.get("description") or pasted)
-        from . import formfill
-        say(f"Opening the job in the jobbot browser ({plat})...")
-        r = formfill.run_in_browser(lambda b: platforms.read_new_page(b, canon, say))
-        return platforms.to_job(plat, {**r, "url": canon})
-    if is_manual(url):
-        if len(pasted) < 200:
-            raise ValueError("For LinkedIn/Indeed/Wellfound/Talboss I don't fetch or automate the site. "
-                             "Paste the job description in the box and I'll tailor your resume; you apply yourself.")
-        info = ai.extract_job(pasted)
-        return dict(id=f"manual:{uid}", source="manual", company=info.get("company") or "Unknown",
-                    title=info.get("title") or "Role", location=info.get("location", ""), url=url, apply_url=url,
-                    description=info.get("description") or pasted)
+    if len(pasted) >= 200:
+        return pasted
+    u = urlparse((url or "").strip())
+    if u.scheme not in ("http", "https") or not u.netloc:
+        raise ValueError("Paste a full job link starting with https://, or paste the job description.")
+    text = ""
     try:
-        if "greenhouse.io" in host and len(parts) >= 3 and parts[1] == "jobs":
-            return _gh(parts[0], parts[2], url)
-        if host == "jobs.lever.co" and len(parts) >= 2:
-            return _lever(parts[0], parts[1], url)
-        if host == "jobs.ashbyhq.com" and len(parts) >= 2:
-            return _ashby(parts[0], parts[1], url)
+        text = _from_ats(u.netloc.lower(), [p for p in u.path.split("/") if p])
+        if len(text) < 800:
+            text = _clean(_get(url.strip()).text)
     except Exception:
-        pass  # fall through to generic reading
-    text = pasted or _page_text(url)
+        text = ""
+    if len(text) < 800:
+        try:
+            text = _rendered(url.strip())
+        except Exception:
+            pass
     if len(text) < 300:
-        raise ValueError("I couldn't read a job description from that link (it may need JavaScript or a login). "
-                         "Paste the description into the box and try again.")
-    info = ai.extract_job(text)
-    return dict(id=f"web:{uid}", source="web", company=info.get("company") or host, title=info.get("title") or "Role",
-                location=info.get("location", ""), url=url, apply_url=url, description=info.get("description") or text)
+        raise ValueError(NEED_PASTE)
+    return text

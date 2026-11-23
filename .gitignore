@@ -1,4 +1,6 @@
 data/
+output/
+tools/
 profile/master_resume.yaml
 profile/answers.json
 profile/auth.json

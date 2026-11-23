@@ -13,7 +13,7 @@ if not errorlevel 1 (
 
 echo Starting JobBot. Keep this window open - closing it stops JobBot.
 echo.
-python main.py app
+python main.py
 echo.
 echo JobBot stopped.
 pause

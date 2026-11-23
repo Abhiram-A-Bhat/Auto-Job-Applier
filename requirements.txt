@@ -1,7 +1,5 @@
-anthropic
-httpx
-pyyaml
-reportlab
 flask
+httpx
 playwright
+pyyaml
 waitress
