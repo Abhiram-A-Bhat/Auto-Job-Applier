@@ -1,1 +1,4 @@
 model: sonnet   # Claude Code model that writes the resume
+cloud:
+  url: "https://jobbot-inbox.vercel.app"
+  poll_seconds: 15

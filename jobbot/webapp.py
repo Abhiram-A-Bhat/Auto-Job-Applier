@@ -42,6 +42,8 @@ def file(name):
 
 def run():
     from waitress import serve
+    from . import cloudsync
+    cloudsync.start()
     print(f"Resume tailor: http://127.0.0.1:{PORT}  (keep this window open)")
     threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{PORT}")).start()
     serve(app, host="127.0.0.1", port=PORT, threads=4, channel_timeout=900)

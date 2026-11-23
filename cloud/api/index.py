@@ -1,13 +1,9 @@
-"""Cloud inbox (runs on Vercel). Paste links, approve jobs and answer form questions from anywhere.
-The laptop agent (jobbot/cloudsync.py) pulls everything in order whenever the laptop app is running.
+"""Resume tailor website (runs on Vercel). Paste a job link here; the laptop tailors it and uploads the PDF back.
 
-Env vars: APP_EMAIL, APP_PASSWORD_HASH, SECRET_KEY, AGENT_TOKEN,
-          KV_REST_API_URL + KV_REST_API_TOKEN (or UPSTASH_REDIS_REST_URL/_TOKEN) from the Upstash Redis integration,
-          or REDIS_URL from the Redis Cloud integration.
-WhatsApp bot (optional, official Cloud API): WA_VERIFY_TOKEN, WA_APP_SECRET, WA_TOKEN, WA_PHONE_NUMBER_ID,
-          WA_ALLOWED (comma-separated numbers allowed to use the bot, e.g. 919876543210), WA_API_VERSION.
+Env vars: APP_EMAIL, APP_PASSWORD_HASH, SECRET_KEY, AGENT_TOKEN, and REDIS_URL
+          (or KV_REST_API_URL + KV_REST_API_TOKEN / UPSTASH_REDIS_REST_URL + _TOKEN).
 """
-import hashlib
+import base64
 import hmac
 import json
 import os
@@ -17,11 +13,11 @@ import uuid
 from datetime import timedelta
 
 import httpx
-from flask import Flask, jsonify, redirect, render_template_string, request, session
+from flask import Flask, Response, jsonify, redirect, render_template_string, request, session
 from werkzeug.security import check_password_hash
 
 
-# ---- storage: Upstash Redis over REST (in-memory fallback for local testing) ---------------------------------
+# ---- storage: Redis (in-memory fallback for local testing) ----------------------------------------------------
 class RedisStore:
     def __init__(self, url, token):
         self.url, self.h = url.rstrip("/"), {"Authorization": f"Bearer {token}"}
@@ -41,8 +37,6 @@ class MemStore:
         if op == "GET":
             return self.kv.get(a[0])
         if op == "SET":
-            if "NX" in [str(x).upper() for x in a[2:]] and a[0] in self.kv:
-                return None
             self.kv[a[0]] = str(a[1])
             return "OK"
         if op == "DEL":
@@ -80,31 +74,34 @@ _tok = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST
 _redis_url = os.environ.get("REDIS_URL") or os.environ.get("KV_URL")
 store = (RedisStore(_url, _tok) if _url and _tok else
          RedisTcpStore(_redis_url) if _redis_url else MemStore())
+KEEP = 100  # newest resumes kept online
+MAX_PDF = int(2.5 * 1024 * 1024)
 
 
-def _all(zkey, prefix):
-    ids = store.cmd("ZRANGE", zkey, 0, -1) or []
-    vals = store.cmd("MGET", *[prefix + i for i in ids]) if ids else []
+def _items():
+    ids = store.cmd("ZRANGE", "resumes", 0, -1) or []
+    vals = store.cmd("MGET", *["res:" + i for i in ids]) if ids else []
     return [json.loads(v) for v in vals if v]
 
 
-def _load(prefix, i):
-    v = store.cmd("GET", prefix + i)
+def _load(i):
+    v = store.cmd("GET", "res:" + i)
     return json.loads(v) if v else None
 
 
-def _put(prefix, zkey, obj, score):
-    store.cmd("SET", prefix + obj["id"], json.dumps(obj))
-    store.cmd("ZADD", zkey, score, obj["id"])
+def _save(it):
+    store.cmd("SET", "res:" + it["id"], json.dumps(it))
+    store.cmd("ZADD", "resumes", it["created"], it["id"])
 
 
-def _delete(prefix, zkey, i):
-    store.cmd("DEL", prefix + i)
-    store.cmd("ZREM", zkey, i)
+def _remove(i):
+    for key in ("res:" + i, f"file:{i}:pdf", f"file:{i}:tex"):
+        store.cmd("DEL", key)
+    store.cmd("ZREM", "resumes", i)
 
 
-def _bump():  # tells the laptop something changed, so idle polls cost only 2 Redis commands
-    store.cmd("INCR", "ver")
+def _bump():  # tells the laptop something changed, so idle polls stay cheap
+    store.cmd("INCR", "resumes:ver")
 
 
 # ---- app + login ---------------------------------------------------------------------------------------------
@@ -117,84 +114,57 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", S
 EMAIL = os.environ.get("APP_EMAIL", "")
 PW_HASH = os.environ.get("APP_PASSWORD_HASH", "")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
-SKIP = "__skip__"
-ACTIONS = ("approved", "rejected", "applied_manual", "submitted", "needs_manual", "cancelled")
-LABEL = {"waiting": "waiting for the laptop", "processing": "tailoring your resume...",
-         "needs_info": "needs a detail from you (top of page)", "queued": "ready for approval",
-         "approved": "approved - will apply in order", "filling": "filling the form...",
-         "awaiting_input": "needs your answer (top of page)", "filled": "form filled", "submitted": "submitted",
-         "needs_manual": "needs manual apply", "rejected": "rejected", "applied_manual": "applied manually",
-         "error": "error", "cancelled": "cancelled"}
+LABEL = {"waiting": "waiting for the laptop", "processing": "tailoring on the laptop...", "done": "ready",
+         "error": "couldn't make it"}
 
-ASSETS_V = "4"  # keep in sync with jobbot/webapp.py; cloud/public/static is a copy of jobbot/static
+ASSETS_V = "4"  # cloud/public/static is a copy of jobbot/static
 CSS = f"""<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/static/glass.css?v={ASSETS_V}"><script src="/static/glass.js?v={ASSETS_V}" defer></script>"""
 
 LOGIN = "<!doctype html><title>Log in</title>" + CSS + """
-<h2>Job applier</h2>{% if msg %}<div class="warn">{{ msg }}</div>{% endif %}
+<h2>Resume tailor</h2>{% if msg %}<div class="warn">{{ msg }}</div>{% endif %}
 <form class="box" method="post">
  <label>Email<input type="text" name="email" autocomplete="username" required autofocus></label>
  <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
  <label><input type="checkbox" name="remember" checked> Keep me logged in on this device (30 days)</label><br>
  <button class="ok">Log in</button></form>"""
 
-HOME = "<!doctype html><title>Job applier</title>" + CSS + """
-<nav><b>Job applier</b><span class="led {{ 'on' if online else 'off' }}">{{ laptop }}</span>
+HOME = "<!doctype html><title>Resume tailor</title>" + CSS + """
+<nav><b>Resume tailor</b><span class="led {{ 'on' if online else 'off' }}">{{ laptop }}</span>
 <form method="post" action="/logout" style="margin-left:auto"><button>Log out</button></form></nav>
 <main id="main">
-<h2>Paste a job link</h2>
+<h2>Tailor my resume</h2>
 <form class="box" method="post" action="/add">
- <input type="url" name="url" placeholder="Paste a job link" required>
- <textarea name="pasted" rows="3" placeholder="Optional: paste the job description (needed only if the laptop can't open the page)"></textarea>
- <button class="ok">Add to queue</button>
- <div class="meta">Links are processed in the order you add them, as soon as the laptop app is running.</div></form>
-{% for q in questions %}<form class="box ask" method="post" action="/answer/{{ q.id }}">
- <b>{{ q.label }}</b> <span class="meta">({{ q.title }} - {{ q.company }})</span>
- {% if q.options %}<select name="answer">{% for o in q.options %}<option>{{ o }}</option>{% endfor %}</select>
- {% elif q.kind == 'textarea' %}<textarea name="answer" rows="6">{{ q.suggestion }}</textarea>
- {% else %}<input type="text" name="answer">{% endif %}
- {% if q.kind != 'textarea' %}<label><input type="checkbox" name="remember" checked> Remember for next time</label><br>{% endif %}
- <button class="ok">Save</button> <button name="skip" value="1" formnovalidate>Leave blank</button></form>{% endfor %}
-{% for i in items %}<details><summary>{{ i.title or i.url[:60] }}{% if i.company %} - {{ i.company }}{% endif %}
- <span class="chip st-{{ i.status }}">{{ label.get(i.status, i.status) }}</span>
- <span class="meta">{% if i.score %}fit {{ i.score }}{% endif %}{% if i.salary_lpa %} | {{ '%.1f' % i.salary_lpa }} LPA{% endif %}{% if i.action %} | {{ i.action }} pending - laptop will do it{% endif %}</span></summary>
- <p><a href="{{ i.url }}" target="_blank" rel="noopener">Open job posting</a></p>
- {% for w in i.warnings or [] %}<div class="warn">{{ w }}</div>{% endfor %}
- {% if i.notes %}<pre>{{ i.notes }}</pre>{% endif %}
- {% if i.summary %}<h4>Tailored resume</h4><pre>{{ i.summary }}</pre>{% endif %}
- {% if i.cover %}<h4>Cover letter</h4><pre>{{ i.cover }}</pre>{% endif %}
- {% for a, text, cls in buttons(i) %}<form class="inline" method="post" action="/act/{{ i.id }}/{{ a }}" style="display:inline">
- <button class="{{ cls }}">{{ text }}</button></form>{% endfor %}
-</details>{% else %}<p class="meta">Nothing yet. Paste a link above.</p>{% endfor %}
-</main>
+ <input type="url" name="url" placeholder="Paste the job link" required>
+ <textarea name="pasted" rows="3" placeholder="Only if the link needs a login: paste the job description here"></textarea>
+ <button class="ok">Make PDF</button>
+ <div class="meta">Your laptop tailors links in the order you add them. If it's off, they wait here.</div></form>
+<div id="list">
+{% for i in items %}<div class="box"><span class="chip st-{{ i.status }}">{{ label[i.status] }}</span>
+ <b>{% if i.role %}{{ i.role }} - {{ i.company }}{% else %}{{ i.url[:70] }}{% endif %}</b>
+ {% if i.status == 'done' %}{% if i.note %}<div class="warn">{{ i.note }}</div>{% endif %}
+ <p><a href="/file/{{ i.id }}/pdf" target="_blank" rel="noopener">Open PDF</a> | <a href="/file/{{ i.id }}/pdf?dl=1">Download PDF</a> |
+ <a href="/file/{{ i.id }}/tex">Download LaTeX</a> | <a href="{{ i.url }}" target="_blank" rel="noopener">Job posting</a></p>
+ {% elif i.status == 'error' %}<div class="warn">{{ i.error }}</div>
+ <form method="post" action="/retry/{{ i.id }}"><textarea name="pasted" rows="3" placeholder="Paste the job description here if the link needs a login"></textarea>
+ <button class="ok">Try again</button></form>{% endif %}
+ {% if i.status != 'processing' %}<form method="post" action="/remove/{{ i.id }}" style="display:inline"><button class="no">Remove</button></form>{% endif %}
+</div>{% else %}<p class="meta">Nothing yet. Paste a link above.</p>{% endfor %}
+</div></main>
 <script>
 setInterval(async () => {
-  const m = document.getElementById('main'), a = document.activeElement;
-  if (m.querySelector('details[open]') || (a && a.closest && a.closest('form'))) return;
+  const l = document.getElementById('list'), a = document.activeElement;
+  if (a && a.closest && a.closest('#list form')) return;
   try {
-    const r = await fetch('/', {headers: {'X-Partial': '1'}});
+    const r = await fetch('/');
     if (r.redirected) { location.href = '/login'; return; }
-    const d = new DOMParser().parseFromString(await r.text(), 'text/html'), n = d.getElementById('main'), led = d.querySelector('nav .led');
-    if (n && n.innerHTML !== m._last) { m._last = n.innerHTML; m.innerHTML = n.innerHTML; }
+    const d = new DOMParser().parseFromString(await r.text(), 'text/html'), n = d.getElementById('list'), led = d.querySelector('nav .led');
+    if (n && n.innerHTML !== l._last) { l._last = n.innerHTML; l.innerHTML = n.innerHTML; }
     const cur = document.querySelector('nav .led');
     if (led && cur) { cur.className = led.className; cur.textContent = led.textContent; }
   } catch (e) {}
-}, 15000);
+}, 6000);
 </script>"""
-
-
-def _buttons(i):
-    s, manual = i.get("status"), i.get("source") == "manual"
-    if s == "waiting":
-        return [("remove", "Remove", "no")]
-    if s == "queued":
-        return [("applied_manual", "I applied myself", "ok") if manual else ("approved", "Approve - apply", "ok"),
-                ("rejected", "Reject", "no")]
-    if s == "filled":
-        return [("submitted", "It went through", "ok"), ("needs_manual", "Didn't go through", "")]
-    if s in ("needs_info", "approved", "filling", "awaiting_input"):
-        return [("cancelled", "Cancel", "no")]
-    return []
 
 
 def _ip():
@@ -203,18 +173,16 @@ def _ip():
 
 @app.before_request
 def guard():
-    if request.path.startswith(("/api/whatsapp/", "/api/telegram/")) or request.path in ("/privacy", "/data-deletion"):
-        return None  # webhooks authenticate themselves (Meta signature / Telegram secret header); policy pages are public
     if request.path.startswith("/api/agent/"):
         ok = AGENT_TOKEN and hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + AGENT_TOKEN)
         return None if ok else (jsonify(error="unauthorized"), 401)
     if request.endpoint == "static":
         return None
     if ON_VERCEL and isinstance(store, MemStore):
-        return "Storage not connected: add the Upstash Redis integration to this Vercel project, then redeploy.", 500
+        return "Storage not connected: add a Redis integration to this Vercel project, then redeploy.", 500
     if not app.secret_key or not PW_HASH:
         return "Server not configured: set SECRET_KEY, APP_EMAIL, APP_PASSWORD_HASH, AGENT_TOKEN.", 500
-    if request.endpoint not in ("login", "static") and not session.get("user"):
+    if request.endpoint != "login" and not session.get("user"):
         return redirect("/login")
     return None
 
@@ -248,293 +216,97 @@ def logout():
 
 @app.get("/")
 def home():
-    seen = float(store.cmd("GET", "agent:seen") or 0)
-    ago = time.time() - seen
+    ago = time.time() - float(store.cmd("GET", "agent:seen") or 0)
     online = ago < 120
-    laptop = "Laptop online" if online else (
-        f"Laptop offline (last seen {int(ago // 60)} min ago) - links wait in the queue" if seen else
-        "Laptop hasn't connected yet - links wait in the queue")
-    items = sorted(_all("items", "item:"), key=lambda i: -i["created"])
-    return render_template_string(HOME, items=items, questions=_all("questions", "q:"), online=online,
-                                  laptop=laptop, label=LABEL, buttons=_buttons)
+    laptop = "Laptop online" if online else "Laptop offline - links wait here"
+    items = sorted(_items(), key=lambda i: -i["created"])
+    return render_template_string(HOME, items=items, online=online, laptop=laptop, label=LABEL)
 
 
 @app.post("/add")
 def add():
     url = request.form.get("url", "").strip()
     if url.startswith(("http://", "https://")):
-        now = time.time()
-        _put("item:", "items", {"id": uuid.uuid4().hex[:12], "url": url, "pasted": request.form.get("pasted", ""),
-                                "created": now, "status": "waiting", "source": "phone"}, now)
+        _save({"id": uuid.uuid4().hex[:12], "url": url, "pasted": request.form.get("pasted", "")[:20000],
+               "created": time.time(), "status": "waiting", "attempt": 0})
         _bump()
     return redirect("/")
 
 
-@app.post("/act/<item_id>/<action>")
-def act(item_id, action):
-    it = _load("item:", item_id)
-    if it and action == "remove" and it["status"] == "waiting":
-        _delete("item:", "items", item_id)
-    elif it and action in ACTIONS:
-        it["action"] = action
-        _put("item:", "items", it, it["created"])
-    _bump()
-    return redirect("/")
-
-
-@app.post("/answer/<qid>")
-def answer(qid):
-    q = _load("q:", qid)
-    if q:
-        q["answer"] = SKIP if request.form.get("skip") else request.form.get("answer", "").strip()
-        q["remember"] = bool(request.form.get("remember"))
-        _put("q:", "questions", q, q.get("created", time.time()))
+@app.post("/retry/<item_id>")
+def retry(item_id):
+    it = _load(item_id)
+    if it and it["status"] == "error":
+        it.update(status="waiting", error="", attempt=it.get("attempt", 0) + 1)
+        it["pasted"] = request.form.get("pasted", "").strip()[:20000] or it.get("pasted", "")
+        _save(it)
         _bump()
     return redirect("/")
+
+
+@app.post("/remove/<item_id>")
+def remove(item_id):
+    it = _load(item_id)
+    if it and it["status"] != "processing":
+        _remove(item_id)
+        _bump()
+    return redirect("/")
+
+
+@app.get("/file/<item_id>/<kind>")
+def download(item_id, kind):
+    it = _load(item_id)
+    data = store.cmd("GET", f"file:{item_id}:{kind}") if it and kind in ("pdf", "tex") else None
+    if not data:
+        return "Not found", 404
+    body = base64.b64decode(data) if kind == "pdf" else data.encode("utf-8")
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", it.get("name") or "resume") + "." + kind
+    how = "inline" if kind == "pdf" and not request.args.get("dl") else "attachment"
+    return Response(body, mimetype="application/pdf" if kind == "pdf" else "application/x-tex",
+                    headers={"Content-Disposition": f'{how}; filename="{name}"', "X-Content-Type-Options": "nosniff",
+                             "Cache-Control": "private, no-store"})
 
 
 # ---- laptop agent API (Bearer AGENT_TOKEN) -------------------------------------------------------------------
 @app.post("/api/agent/pull")
 def agent_pull():
     store.cmd("SET", "agent:seen", time.time())
-    ver = store.cmd("GET", "ver") or "0"
+    ver = str(store.cmd("GET", "resumes:ver") or "0")
     if (request.get_json(silent=True) or {}).get("ver") == ver:
         return jsonify(ver=ver, unchanged=True)
-    items = _all("items", "item:")
-    return jsonify(ver=ver,
-                   waiting=[i for i in items if i["status"] in ("waiting", "processing")],  # processing: laptop died mid-way
-                   actions=[{"id": i["id"], "action": i["action"], "created": i["created"]} for i in items if i.get("action")],
-                   answers=[{"id": q["id"], "answer": q["answer"], "remember": q.get("remember", True)}
-                            for q in _all("questions", "q:") if q.get("answer") is not None])
+    todo = [i for i in _items() if i["status"] in ("waiting", "processing")]  # processing: laptop stopped mid-way
+    return jsonify(ver=ver, todo=sorted(todo, key=lambda i: i["created"]))
 
 
-@app.post("/api/agent/push")
-def agent_push():
+@app.post("/api/agent/status")
+def agent_status():
     d = request.get_json(force=True)
-    for u in d.get("items", []):
-        cur = _load("item:", u["id"]) or {"id": u["id"], "created": u.get("created", time.time())}
-        old = cur.get("status")
-        cur.update({k: v for k, v in u.items() if k not in ("action", "id")})
-        _put("item:", "items", cur, cur["created"])
-        if (cur.get("wa_from") or cur.get("tg_chat")) and cur.get("status") != old:
-            wa_notify(cur)
-    for a in d.get("ack_actions", []):
-        cur = _load("item:", a["id"])
-        if cur and cur.get("action") == a["action"]:
-            cur.pop("action")
-            _put("item:", "items", cur, cur["created"])
-    for q in d.get("questions", []):
-        if not _load("q:", q["id"]):
-            _put("q:", "questions", {**q, "answer": None, "created": time.time()}, time.time())
-    for qid in d.get("remove_questions", []) + d.get("ack_answers", []):
-        _delete("q:", "questions", qid)
-    for q in d.get("questions", []):  # a form needs an answer: ping the chat the job came from
-        it = _load("item:", q.get("item_id", ""))
-        if it:
-            bot_send(it, f"❓ {it.get('title') or 'A job'} needs an answer: \"{q['label']}\"\n"
-                         f"Answer it here: {request.host_url}")
+    it = _load(d.get("id", ""))
+    if not it:
+        return jsonify(ok=False), 404
+    if d.get("status") in ("processing", "error"):
+        it.update(status=d["status"], error=str(d.get("error", ""))[:500])
+        _save(it)
     return jsonify(ok=True)
 
 
-# ---- public policy pages (Meta requires a privacy policy URL to publish the app) --------------------------------
-POLICY = "<!doctype html><title>{{ t }}</title>" + CSS + """<main id="main"><h2>{{ t }}</h2><div class="box">{{ body|safe }}</div></main>"""
-PRIVACY = """<p><b>Job applier</b> is a personal tool run by its single owner to queue job links and track their own
-job applications. It is not offered to the public.</p>
-<p><b>What it receives:</b> WhatsApp or Telegram messages sent to the bot by the owner's own linked account
-(the text and links in those messages), and job links/answers entered on this site after logging in.
-Messages from anyone else are ignored and not stored.</p>
-<p><b>What it stores:</b> the queued job links, their status, and short status notes, in a private database used only by
-this app. Each message ID is kept for 24 hours to avoid processing duplicates.</p>
-<p><b>Sharing:</b> nothing is sold or shared with third parties. Data is processed only by the hosting provider (Vercel),
-the database provider (Redis), and Meta's WhatsApp Cloud API to deliver replies.</p>
-<p><b>Deletion:</b> see <a href="/data-deletion">data deletion</a>.</p>"""
-DELETION = """<p>To delete your data, send <b>delete my data</b> to the bot on WhatsApp, or email the owner at the address
-listed on this app's Meta developer page. Queued links and statuses are removed from the database, and message IDs expire
-automatically after 24 hours.</p>"""
-
-
-@app.get("/privacy")
-def privacy():
-    return render_template_string(POLICY, t="Privacy policy", body=PRIVACY)
-
-
-@app.get("/data-deletion")
-def data_deletion():
-    return render_template_string(POLICY, t="Data deletion", body=DELETION)
-
-
-# ---- WhatsApp bot (official Cloud API; your personal WhatsApp stays a normal account) ---------------------------
-WA_VERIFY = os.environ.get("WA_VERIFY_TOKEN", "")
-WA_SECRET = os.environ.get("WA_APP_SECRET", "")
-WA_TOKEN = os.environ.get("WA_TOKEN", "")
-WA_PHONE_ID = os.environ.get("WA_PHONE_NUMBER_ID", "")
-WA_VER = os.environ.get("WA_API_VERSION", "v23.0")
-WA_ALLOWED = {re.sub(r"\D", "", n) for n in os.environ.get("WA_ALLOWED", "").split(",") if n.strip()}
-URL_RE = re.compile(r"https?://[^\s<>\"']+")
-FREE_WINDOW = 23.5 * 3600  # replies inside 24h of your last message are free "service" messages
-HELP = ("Send me a job link and I'll queue it \U0001F4CC\n"
-        "• approve <code> / reject <code> - decide on a tailored resume\n"
-        "• status - what's in the queue")
-
-
-def _code(item):
-    return item["id"][:5]
-
-
-def wa_send(to, text):
-    """Free-form reply - only inside the free 24h window, so the bot never costs money."""
-    last = float(store.cmd("GET", "wa:last:" + to) or 0)
-    if not (WA_TOKEN and WA_PHONE_ID) or time.time() - last > FREE_WINDOW:
-        return False
+@app.post("/api/agent/upload")
+def agent_upload():
+    d = request.get_json(force=True)
+    it = _load(d.get("id", ""))
+    if not it:
+        return jsonify(ok=False), 404  # you removed it while it was being made
     try:
-        httpx.post(f"https://graph.facebook.com/{WA_VER}/{WA_PHONE_ID}/messages",
-                   headers={"Authorization": f"Bearer {WA_TOKEN}"}, timeout=10,
-                   json={"messaging_product": "whatsapp", "to": to, "type": "text",
-                         "text": {"body": text[:4000], "preview_url": False}})
-        return True
-    except Exception:
-        return False
-
-
-def wa_notify(it):
-    s, name = it.get("status"), f"{it.get('title') or it['url'][:50]}{' - ' + it['company'] if it.get('company') else ''}"
-    msg = {
-        "queued": f"\U0001F4C4 Resume ready: {name}" + (f" (fit {it['score']})" if it.get("score") else "") +
-                  (f"\nReply *approve {_code(it)}* or *reject {_code(it)}*" if it.get("source") != "manual" else
-                   "\nThis site isn't automated - apply with the tailored PDF yourself.") + f"\n{request.host_url}",
-        "filled": f"\U0001F4DD Form filled for {name}. Review it on the laptop and press Submit.",
-        "submitted": f"✅ Applied: {name}",
-        "error": f"⚠️ Couldn't process {name}: {(it.get('notes') or '')[:200]}",
-    }.get(s)
-    if msg:
-        bot_send(it, msg)
-
-
-def bot_send(it, text):
-    """Reply in whichever chat the job came from (WhatsApp or Telegram)."""
-    if it.get("wa_from"):
-        return wa_send(it["wa_from"], text)
-    if it.get("tg_chat"):
-        return tg_send(it["tg_chat"], text.replace("*", ""))
-    return False
-
-
-def _wa_handle(frm, text, key="wa_from", source="whatsapp"):
-    low = text.strip().lower()
-    if low.startswith("/"):  # Telegram-style commands: /status, /approve abc12, /help
-        low = re.sub(r"^(\w+)@\w+", r"\1", low[1:])
-    items = _all("items", "item:")
-    if low == "delete my data":
-        mine = [i for i in items if i.get(key) == frm]
-        for i in mine:
-            _delete("item:", "items", i["id"])
-        _bump()
-        return f"\U0001F5D1 Deleted {len(mine)} queued item(s) that came from this chat."
-    m = re.match(r"^(approve|reject)\s+([a-f0-9]{4,12})\b", low)
-    if m:
-        hits = [i for i in items if i["id"].startswith(m[2])]
-        if not hits:
-            return f"No job with code {m[2]}."
-        it = hits[0]
-        if it.get("status") != "queued":
-            return f"{it.get('title') or 'That job'} is '{LABEL.get(it.get('status'), it.get('status'))}', nothing to {m[1]}."
-        it["action"] = "approved" if m[1] == "approve" else "rejected"
-        _put("item:", "items", it, it["created"])
-        _bump()
-        return ("\U0001F44D Approved - it will be filled in order." if m[1] == "approve" else "\U0001F5D1 Rejected.")
-    urls = [u.rstrip(").,;!?]'\"") for u in URL_RE.findall(text)]
-    if not urls:
-        if low in ("status", "queue"):
-            count = {}
-            for i in items:
-                count[i.get("status")] = count.get(i.get("status"), 0) + 1
-            seen = float(store.cmd("GET", "agent:seen") or 0)
-            lines = [f"{LABEL.get(k, k)}: {v}" for k, v in sorted(count.items())] or ["Queue is empty."]
-            return "\n".join(lines) + ("\n\U0001F7E2 Laptop online" if time.time() - seen < 120 else "\n\U0001F7E0 Laptop offline")
-        return HELP
-    for u in urls[:5]:
-        now = time.time()
-        _put("item:", "items", {"id": uuid.uuid4().hex[:12], "url": u, "pasted": text if len(text) > 200 else "",
-                                "created": now, "status": "waiting", "source": source, key: frm}, now)
-    _bump()
-    waiting = sum(1 for i in items if i.get("status") == "waiting") + len(urls[:5])
-    online = time.time() - float(store.cmd("GET", "agent:seen") or 0) < 120
-    return (f"✅ Queued {len(urls[:5])} link{'s' if len(urls) > 1 else ''} ({waiting} waiting).\n" +
-            ("Laptop is online - tailoring now." if online else "Laptop is offline - I'll process it when it's back on."))
-
-
-@app.get("/api/whatsapp/webhook")
-def wa_verify():
-    ok = WA_VERIFY and request.args.get("hub.mode") == "subscribe" and \
-        hmac.compare_digest(request.args.get("hub.verify_token", ""), WA_VERIFY)
-    return (request.args.get("hub.challenge", ""), 200) if ok else ("forbidden", 403)
-
-
-@app.post("/api/whatsapp/webhook")
-def wa_hook():
-    raw = request.get_data()
-    sig = "sha256=" + hmac.new(WA_SECRET.encode(), raw, hashlib.sha256).hexdigest() if WA_SECRET else ""
-    if not WA_SECRET or not hmac.compare_digest(request.headers.get("X-Hub-Signature-256", ""), sig):
-        return "bad signature", 401
-    for e in json.loads(raw or b"{}").get("entry", []):
-        for ch in e.get("changes", []):
-            v = ch.get("value") or {}
-            for st in v.get("statuses", []):  # delivery receipts for the bot's own messages (errors explain failures)
-                print("wa status:", st.get("status"), "to ..." + st.get("recipient_id", "")[-4:],
-                      json.dumps(st.get("errors", []))[:300])
-            for m in v.get("messages", []):
-                frm = m.get("from", "")
-                print("wa message from ..." + frm[-4:], "type", m.get("type"),
-                      "allowed" if (not WA_ALLOWED or frm in WA_ALLOWED) else "NOT in WA_ALLOWED")
-                if WA_ALLOWED and frm not in WA_ALLOWED:
-                    continue  # not you: ignore silently
-                if store.cmd("SET", "wa:msg:" + m.get("id", ""), 1, "NX", "EX", 86400) is None:
-                    continue  # Meta retries deliveries; handle each message once
-                store.cmd("SET", "wa:last:" + frm, time.time())
-                text = (m.get("text") or {}).get("body", "") if m.get("type") == "text" else ""
-                wa_send(frm, _wa_handle(frm, text))
-    return "ok", 200
-
-
-# ---- Telegram bot (free, works with a normal personal Telegram account) -----------------------------------------
-TG_TOKEN = os.environ.get("TG_TOKEN", "")
-TG_SECRET = os.environ.get("TG_SECRET", "")  # Telegram echoes it in a header on every webhook call
-TG_PAIR = os.environ.get("TG_PAIR", "")  # one-time link code: t.me/<bot>?start=<TG_PAIR> makes that chat the owner
-
-
-def tg_owners():
-    env = {c.strip() for c in os.environ.get("TG_ALLOWED", "").split(",") if c.strip()}
-    return env | ({str(store.cmd("GET", "tg:owner"))} if store.cmd("GET", "tg:owner") else set())
-
-
-def tg_send(chat, text):
-    if not TG_TOKEN:
-        return False
-    try:
-        httpx.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", timeout=10,
-                   json={"chat_id": chat, "text": text[:4000], "disable_web_page_preview": True})
-        return True
-    except Exception:
-        return False
-
-
-@app.post("/api/telegram/webhook")
-def tg_hook():
-    if not (TG_TOKEN and TG_SECRET) or not hmac.compare_digest(
-            request.headers.get("X-Telegram-Bot-Api-Secret-Token", ""), TG_SECRET):
-        return "forbidden", 403
-    u = request.get_json(force=True, silent=True) or {}
-    m = u.get("message") or {}
-    chat = str((m.get("chat") or {}).get("id", ""))
-    text = m.get("text") or m.get("caption") or ""
-    if not chat or store.cmd("SET", f"tg:upd:{u.get('update_id')}", 1, "NX", "EX", 86400) is None:
-        return "ok", 200  # Telegram retries deliveries; handle each update once
-    owners = tg_owners()
-    print("tg message from chat ..." + chat[-4:], "owner" if chat in owners else "not owner")
-    if chat not in owners:
-        if TG_PAIR and not owners and text.strip() == f"/start {TG_PAIR}":
-            store.cmd("SET", "tg:owner", chat)
-            tg_send(chat, "\U0001F517 Linked! This chat now controls your job queue.\n\n" + HELP)
-        return "ok", 200  # not you: ignore silently
-    tg_send(chat, _wa_handle(chat, text, key="tg_chat", source="telegram"))
-    return "ok", 200
+        pdf = base64.b64decode(d["pdf"], validate=True)
+    except (KeyError, ValueError):
+        return jsonify(error="bad pdf"), 400
+    if not pdf.startswith(b"%PDF") or len(pdf) > MAX_PDF:
+        return jsonify(error="bad pdf"), 400
+    store.cmd("SET", f"file:{it['id']}:pdf", d["pdf"])
+    store.cmd("SET", f"file:{it['id']}:tex", str(d.get("tex", "")))
+    it.update(status="done", error="", role=str(d.get("role", ""))[:120], company=str(d.get("company", ""))[:120],
+              name=str(d.get("name", "resume"))[:120], note=str(d.get("note", ""))[:500], pasted="")
+    _save(it)
+    for old in (store.cmd("ZRANGE", "resumes", 0, -1) or [])[:-KEEP]:
+        _remove(old)
+    return jsonify(ok=True)

@@ -8,4 +8,7 @@ Paste a job link. Claude Code reads the job and writes a tailored LaTeX resume. 
 
 The PDF and `.tex` are saved in `output/`.
 
+**From anywhere:** paste the link at https://jobbot-inbox.vercel.app. While this app is running, the laptop tailors
+links in order and uploads each PDF, so you can download it from the website. If the laptop is off, links wait.
+
 Needs: Python, a logged-in Claude Code, and the Tectonic LaTeX compiler at `tools/tectonic.exe`.
