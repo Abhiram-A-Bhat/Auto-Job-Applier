@@ -79,7 +79,8 @@ def score(job, master_txt):
         "match on core requirements, 70-89 = good, <70 = stretch/mismatch (seniority, missing must-have "
         'skills, wrong domain). The candidate lives in India and is a final-year student with about 3 months of '
         "internship experience: score under 40 for roles restricted to another country/region (e.g. 'Remote - US') "
-        'or requiring 2+ years of experience. Reply with JSON only: {"score": int, "reason": "one sentence"}')},
+        "or requiring 2+ years of experience. Certifications show coursework, not hands-on experience. "
+        'Reply with JSON only: {"score": int, "reason": "one sentence"}')},
         _resume_block(master_txt)]
     user = f"JOB: {job['title']} at {job['company']} ({job['location']})\n\n{job['description'][:6000]}"
     return _call(cfg["models"]["score"], sys, user, 200)
@@ -102,11 +103,15 @@ HARD RULES
 6. Select and order: keep the most relevant 3-5 bullets per role, most relevant first; drop weak/irrelevant ones.
    Aim for one page. Summary: 2-3 plain sentences specific to this role.
 7. Cover letter: under 170 words, specific to this company and role, no clichés, same voice, no invented facts.
+8. Certifications: choose the 3-5 most relevant to this job, most relevant first, copying each exact `name`. Skip
+   unrelated or non-technical ones unless the job asks for them. They are coursework, not experience: never turn a
+   certificate topic into a work/project bullet, a skills entry, or a claim of hands-on use.
 
 Reply with JSON only:
 {"summary": str, "skills": [str],
  "experience": [{"company": str, "title": str, "dates": str, "location": str, "bullets": [str]}],
  "projects": [{"name": str, "bullets": [str]}],
+ "certifications": [str],
  "cover_letter": str,
  "keywords_mapped": [{"keyword": str, "evidence": "which resume item backs it"}]}"""
 
@@ -146,8 +151,16 @@ def ground(res, master, master_txt):
     bad = _nums(text) - _nums(master_txt)
     if bad:
         warns.append("NUMBERS NOT IN MASTER RESUME (verify or reject): " + ", ".join(sorted(bad)))
+    mcerts = {c["name"].lower(): c for c in master.get("certifications", [])}
+    picked = list(dict.fromkeys(str(n).strip().lower() for n in res.get("certifications", [])))
+    unknown = [n for n in picked if n not in mcerts]
+    if unknown:
+        warns.append("Dropped certifications not in master: " + ", ".join(unknown))
+    # wording always comes from the master, so a certificate can't be embellished
+    certs = [mcerts[n] for n in picked if n in mcerts][:5] or master.get("certifications", [])[:4]
     out = {"summary": res.get("summary", ""), "skills": skills, "experience": exp, "projects": projs,
-           "education": master.get("education", []), "achievements": master.get("achievements", []),
+           "education": master.get("education", []), "certifications": certs,
+           "achievements": master.get("achievements", []),
            "keywords_mapped": res.get("keywords_mapped", [])}
     return out, res.get("cover_letter", ""), warns
 
