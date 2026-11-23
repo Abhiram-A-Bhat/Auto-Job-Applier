@@ -28,13 +28,30 @@ def conn():
         id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, label TEXT, kind TEXT, options TEXT,
         suggestion TEXT, answer TEXT, remember INTEGER DEFAULT 1, created REAL)"""
     )
+    try:
+        c.execute("ALTER TABLE questions ADD COLUMN gap TEXT")  # set when the question fills a gap in the resume
+    except sqlite3.OperationalError:
+        pass
     return c
 
 
-def add_question(job_id, label, kind, options, suggestion):
+def add_question(job_id, label, kind, options, suggestion, gap=None):
     with conn() as c:
-        return c.execute("INSERT INTO questions(job_id,label,kind,options,suggestion,created) VALUES(?,?,?,?,?,?)",
-                         (job_id, label, kind, options, suggestion, time.time())).lastrowid
+        return c.execute("INSERT INTO questions(job_id,label,kind,options,suggestion,created,gap) VALUES(?,?,?,?,?,?,?)",
+                         (job_id, label, kind, options, suggestion, time.time(), gap)).lastrowid
+
+
+def open_gap_questions(label=None, job_id=None):
+    field, value = ("label", label) if label is not None else ("job_id", job_id)
+    with conn() as c:
+        return [dict(r) for r in c.execute(
+            f"SELECT * FROM questions WHERE gap IS NOT NULL AND answer IS NULL AND {field}=?", (value,))]
+
+
+def close_gaps(job_id):
+    with conn() as c:
+        c.execute("UPDATE questions SET answer=?, remember=0 WHERE job_id=? AND gap IS NOT NULL AND answer IS NULL",
+                  ("\x00skip", job_id))
 
 
 def get_question(qid):
@@ -46,7 +63,8 @@ def pending_questions():
     with conn() as c:
         return [dict(r) for r in c.execute(
             "SELECT q.*, j.company, j.title FROM questions q JOIN jobs j ON j.id=q.job_id "
-            "WHERE q.answer IS NULL ORDER BY q.id")]
+            "WHERE q.answer IS NULL AND (q.gap IS NULL OR q.id=(SELECT MIN(x.id) FROM questions x "
+            "WHERE x.label=q.label AND x.gap IS NOT NULL AND x.answer IS NULL)) ORDER BY q.id")]
 
 
 def answer_question(qid, answer, remember=True):

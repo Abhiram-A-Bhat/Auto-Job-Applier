@@ -26,9 +26,9 @@ def save(d):
     PATH.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def remember(label, answer, kind="text"):
+def remember(label, answer, kind="text", **extra):
     d = load()
-    d[norm(label)] = {"label": label, "answer": answer, "kind": kind, "updated": time.time()}
+    d[norm(label)] = {"label": label, "answer": answer, "kind": kind, "updated": time.time(), **extra}
     save(d)
 
 

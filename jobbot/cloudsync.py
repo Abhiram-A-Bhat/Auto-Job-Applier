@@ -13,12 +13,12 @@ import time
 
 import httpx
 
-from . import db, formfill, pipeline
+from . import db, formfill, gaps, pipeline
 from .config import ROOT, cfg
 
 MAP = ROOT / "data" / "cloud_map.json"
 TOKEN_FILE = ROOT / "profile" / "cloud_token"
-VISIBLE = ("queued", "approved", "filling", "awaiting_input", "filled", "submitted", "needs_manual", "rejected",
+VISIBLE = ("needs_info", "queued", "approved", "filling", "awaiting_input", "filled", "submitted", "needs_manual", "rejected",
            "applied_manual", "error", "cancelled")
 ACTIONS = ("approved", "rejected", "applied_manual", "submitted", "needs_manual", "cancelled")
 CLOUD_SKIP = "__skip__"
@@ -96,16 +96,20 @@ class Sync:
                     self.todo.put(it)
             for a in sorted(d["actions"], key=lambda i: i["created"]):  # oldest job first
                 jid = self.m["item_to_job"].get(a["id"])
-                if jid and db.get(jid) and a["action"] in ACTIONS:
+                if jid and db.get(jid) and a["action"] in ACTIONS and \
+                        not (a["action"] == "approved" and db.get(jid)["status"] == "needs_info"):
                     db.update(jid, status=a["action"])
                     if a["action"] == "approved":
                         formfill.enqueue(jid)
+                    elif a["action"] in ("rejected", "cancelled"):
+                        db.close_gaps(jid)
                 acks.append({"id": a["id"], "action": a["action"]})
             for a in d["answers"]:
                 lq = self.m["qs"].pop(a["id"], None)
                 if lq is not None and db.get_question(lq)["answer"] is None:
                     ans = formfill.SKIP if a["answer"] == CLOUD_SKIP else a["answer"]
                     db.answer_question(lq, ans, a.get("remember", True) and ans != formfill.SKIP)
+                    gaps.on_answer(lq)
                 ans_acks.append(a["id"])
         # statuses (only what changed since the last push)
         items, hashes = [], {}

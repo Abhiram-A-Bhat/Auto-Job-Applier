@@ -119,7 +119,8 @@ PW_HASH = os.environ.get("APP_PASSWORD_HASH", "")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 SKIP = "__skip__"
 ACTIONS = ("approved", "rejected", "applied_manual", "submitted", "needs_manual", "cancelled")
-LABEL = {"waiting": "waiting for the laptop", "processing": "tailoring your resume...", "queued": "ready for approval",
+LABEL = {"waiting": "waiting for the laptop", "processing": "tailoring your resume...",
+         "needs_info": "needs a detail from you (top of page)", "queued": "ready for approval",
          "approved": "approved - will apply in order", "filling": "filling the form...",
          "awaiting_input": "needs your answer (top of page)", "filled": "form filled", "submitted": "submitted",
          "needs_manual": "needs manual apply", "rejected": "rejected", "applied_manual": "applied manually",
@@ -191,7 +192,7 @@ def _buttons(i):
                 ("rejected", "Reject", "no")]
     if s == "filled":
         return [("submitted", "It went through", "ok"), ("needs_manual", "Didn't go through", "")]
-    if s in ("approved", "filling", "awaiting_input"):
+    if s in ("needs_info", "approved", "filling", "awaiting_input"):
         return [("cancelled", "Cancel", "no")]
     return []
 

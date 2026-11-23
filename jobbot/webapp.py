@@ -11,7 +11,7 @@ from datetime import timedelta
 from flask import Flask, redirect, render_template_string, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import db, fetchjob, formfill, memory, usage
+from . import db, fetchjob, formfill, gaps, memory, usage
 from .config import ROOT, cfg, load_master
 from . import pipeline
 from .pipeline import process_link, run_fetch
@@ -80,7 +80,7 @@ PANEL = """
  {% else %}<input type="text" name="answer" autofocus>{% endif %}
  {% if q.kind != 'textarea' %}<label><input type="checkbox" name="remember" checked> Remember for next time</label><br>{% endif %}
  <button class="ok">Save &amp; continue</button> <button name="skip" value="1" formnovalidate>Leave blank</button></form>{% endfor %}
-{% for j in active %}<div class="box"><span class="chip st-{{ j.status }}">{{ {'approved':'waiting for the browser','filling':'filling the form','awaiting_input':'needs your answer','filled':'form filled - review the browser window'}[j.status] }}</span>
+{% for j in active %}<div class="box"><span class="chip st-{{ j.status }}">{{ {'needs_info':'needs a detail from you','approved':'waiting for the browser','filling':'filling the form','awaiting_input':'needs your answer','filled':'form filled - review the browser window'}[j.status] }}</span>
  <b>{{ j.title }} - {{ j.company }}</b>
  {% if j.notes %}<div class="note">{{ j.notes }}</div>{% endif %}
  {% if j.status == 'filled' %}<form method="post" action="/act/{{ j.id }}/submitted" style="display:inline"><button class="ok">I submitted it</button></form>
@@ -145,7 +145,7 @@ MEMORY = """<!doctype html><title>Remembered answers</title>""" + CSS + NAV + ""
  <input type="text" name="label" placeholder="Question, e.g. Notice period" required>
  <input type="text" name="answer" placeholder="Answer" required><button class="ok">Add</button></form>"""
 
-ACTIVE = ("approved", "filling", "awaiting_input", "filled")
+ACTIVE = ("needs_info", "approved", "filling", "awaiting_input", "filled")
 
 
 def _panel():
@@ -319,6 +319,7 @@ def answer(qid):
         db.answer_question(qid, formfill.SKIP, False)
     else:
         db.answer_question(qid, request.form.get("answer", "").strip(), bool(request.form.get("remember")))
+    gaps.on_answer(qid)
     return redirect("/")
 
 
@@ -326,7 +327,11 @@ def answer(qid):
 def act(job_id, status):
     if status not in ("approved", "applied_manual", "rejected", "submitted", "needs_manual", "cancelled"):
         return "bad", 400
+    if status == "approved" and (db.get(job_id) or {}).get("status") == "needs_info":
+        return redirect("/")  # still waiting on a detail from you
     db.update(job_id, status=status)
+    if status in ("rejected", "cancelled"):
+        db.close_gaps(job_id)
     if status == "approved":
         formfill.enqueue(job_id)
     return redirect("/")
@@ -369,6 +374,7 @@ def run():
             db.update(j["id"], status="approved")
     for j in db.by_status("approved", "created ASC"):  # oldest first: applications go out in queue order
         formfill.enqueue(j["id"])
+    gaps.migrate()
     from . import cloudsync
     cloudsync.start()
     if cfg.get("auto_fetch_hours"):

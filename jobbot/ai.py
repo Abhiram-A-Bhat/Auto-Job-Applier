@@ -126,9 +126,26 @@ def _nums(t):
     return {n.rstrip(".,").replace(",", "") for n in re.findall(r"\d[\d,]*\.?\d*", t)}
 
 
-def ground(res, master, master_txt):
-    """Hard guardrail: force identity facts from the master, drop unbacked skills, flag unknown numbers."""
-    warns = []
+def _posting_ref(n, cover, body, job):
+    """A requisition/job ID copied from the posting into the cover letter isn't a claim about the candidate."""
+    if n in _nums(body) or n not in _nums(job.get("description") or ""):
+        return False
+    said = [s for s in re.split(r"(?<=[.!?])\s+", cover) if n in _nums(s)]
+    return len(n.replace(".", "")) >= 5 or all(
+        re.search(r"requisition|reference|\bref\b|\breq\b|job id|job code|posting", s, re.I) for s in said)
+
+
+def number_gaps(resume, cover, master_txt, job):
+    """Numbers in the generated text that neither the resume nor the job's own title/ID can back up."""
+    body = " ".join([resume.get("summary", "")] + [b for g in ("experience", "projects")
+                                                   for i in resume.get(g, []) for b in i["bullets"]])
+    known = _nums(" ".join([master_txt, job.get("title") or "", job.get("company") or ""]))
+    return sorted(n for n in _nums(body + " " + (cover or "")) - known if not _posting_ref(n, cover or "", body, job))
+
+
+def ground(res, master, master_txt, job=None):
+    """Hard guardrail: force identity facts from the master, drop unbacked items, and list what to ask you about."""
+    warns, gaps = [], []
     mexp = {e["company"].lower(): e for e in master["experience"]}
     exp = []
     for e in res.get("experience", []):
@@ -140,29 +157,24 @@ def ground(res, master, master_txt):
                     "bullets": e.get("bullets", [])})
     mskills = {s.lower() for s in master.get("skills", [])}
     skills = [s for s in res.get("skills", []) if s.lower() in mskills]
-    if len(skills) < len(res.get("skills", [])):
-        warns.append("Dropped skills not in master: " +
-                     ", ".join(s for s in res["skills"] if s.lower() not in mskills))
+    gaps += [{"type": "skill", "name": s} for s in res.get("skills", []) if s.lower() not in mskills]
     mproj = {p["name"].lower(): p for p in master.get("projects", [])}
     projs = [{"name": mproj[p["name"].lower()]["name"], "link": mproj[p["name"].lower()].get("link", ""),
               "bullets": p.get("bullets", [])} for p in res.get("projects", []) if p.get("name", "").lower() in mproj]
-    text = " ".join([res.get("summary", ""), res.get("cover_letter", "")] +
-                    [b for e in exp for b in e["bullets"]] + [b for p in projs for b in p["bullets"]])
-    bad = _nums(text) - _nums(master_txt)
-    if bad:
-        warns.append("NUMBERS NOT IN MASTER RESUME (verify or reject): " + ", ".join(sorted(bad)))
+    draft = {"summary": res.get("summary", ""), "experience": exp, "projects": projs}
+    gaps += [{"type": "number", "value": n}
+             for n in number_gaps(draft, res.get("cover_letter", ""), master_txt, job or {})]
     mcerts = {c["name"].lower(): c for c in master.get("certifications", [])}
-    picked = list(dict.fromkeys(str(n).strip().lower() for n in res.get("certifications", [])))
-    unknown = [n for n in picked if n not in mcerts]
-    if unknown:
-        warns.append("Dropped certifications not in master: " + ", ".join(unknown))
+    named = {str(n).strip().lower(): str(n).strip() for n in res.get("certifications", [])}
+    picked = list(named)
+    gaps += [{"type": "cert", "name": named[n]} for n in picked if n not in mcerts]
     # wording always comes from the master, so a certificate can't be embellished
     certs = [mcerts[n] for n in picked if n in mcerts][:5] or master.get("certifications", [])[:4]
     out = {"summary": res.get("summary", ""), "skills": skills, "experience": exp, "projects": projs,
            "education": master.get("education", []), "certifications": certs,
            "achievements": master.get("achievements", []),
            "keywords_mapped": res.get("keywords_mapped", [])}
-    return out, res.get("cover_letter", ""), warns
+    return out, res.get("cover_letter", ""), warns, gaps
 
 
 def extract_job(text):

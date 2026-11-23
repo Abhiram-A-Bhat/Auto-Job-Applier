@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from . import ai, db, fetchjob, sources
+from . import ai, db, fetchjob, gaps, sources
 from .config import ROOT, cfg, load_master
 from .pdfgen import build_pdf, safe_name
 
@@ -17,13 +17,16 @@ def tailor_job(job, master, master_txt):
         info = ai.extract_job(job["description"])
         db.update(job["id"], **{k: info[k] for k in ("title", "company", "location", "description") if info.get(k)})
         job = db.get(job["id"])
+    master, master_txt = gaps.with_facts(master, master_txt)  # include what you've told us since
     res = ai.tailor(job, master_txt)
-    resume, cover, warns = ai.ground(res, master, master_txt)
+    resume, cover, warns, found = ai.ground(res, master, master_txt, job)
+    found = gaps.still_open(found)
     out = ROOT / "data" / "resumes"
     out.mkdir(parents=True, exist_ok=True)
     pdf = build_pdf(resume, master["contact"], out / f"{safe_name(master['contact']['name'], job['company'], job['title'])}.pdf")
-    db.update(job["id"], status="queued", resume_json=json.dumps(resume), cover=cover, pdf_path=str(pdf),
-              warnings=json.dumps(warns))
+    db.update(job["id"], status="needs_info" if found else "queued", resume_json=json.dumps(resume), cover=cover,
+              pdf_path=str(pdf), warnings=json.dumps(warns))
+    gaps.ask(job["id"], found, resume, cover)
 
 
 OFFLINE = re.compile(r"getaddrinfo|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|"
@@ -53,6 +56,8 @@ def process_link(url, pasted="", say=print):
         return job["id"], f"Already in the system (status: {cur['status']})."
     db.update(job["id"], status="processing", description=job["description"])
     tailor_job(db.get(job["id"]), master, txt)
+    if db.get(job["id"])["status"] == "needs_info":
+        return job["id"], f"Needs a detail from you (see the question box): {job['title']} - {job['company']}"
     return job["id"], f"Queued for approval: {job['title']} - {job['company']}"
 
 
@@ -185,7 +190,7 @@ def run_tailor(master=None, master_txt=None, say=print):
             tailor_job(job, master, master_txt)
             job = db.get(job["id"])
             thr = cfg.get("auto_approve_min_score", 0)
-            if thr and job["source"] != "manual" and (job["score"] or 0) >= thr:
+            if thr and job["status"] == "queued" and job["source"] != "manual" and (job["score"] or 0) >= thr:
                 from . import formfill  # imported lazily: needs Playwright
                 db.update(job["id"], status="approved")
                 formfill.enqueue(job["id"])
